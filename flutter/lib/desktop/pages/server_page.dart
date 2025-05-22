@@ -804,8 +804,8 @@ class _CmControlPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 关键修改：如果hidePanel为true，则不渲染任何内容
-    if (widget.hidePanel) return const SizedBox.shrink();
+    // 修正错误：直接使用参数名 `hidePanel`，移除 `widget.`
+    if (hidePanel) return const SizedBox.shrink(); 
     
     return client.authorized
         ? client.disconnected
