@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:convert';
+import 'dart:json';
 
 import 'package:auto_size_text/auto_size_text.dart';
 import 'package:flutter/material.dart';
@@ -58,16 +58,15 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    final isIncomingOnly = bind.isIncomingOnly();
     return _buildBlock(
-        child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        buildLeftPane(context),
-        if (!isIncomingOnly) const VerticalDivider(width: 1),
-        if (!isIncomingOnly) Expanded(child: buildRightPane(context)),
-      ],
-    ));
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          buildLeftPane(context),
+          // 彻底移除右侧面板相关代码，仅保留左侧界面
+        ],
+      ),
+    );
   }
 
   Widget _buildBlock({required Widget child}) {
@@ -179,13 +178,15 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
-  buildRightPane(BuildContext context) {
-    return Container(
-      color: Theme.of(context).scaffoldBackgroundColor,
-      child: ConnectionPage(),
-    );
-  }
+  // 移除 buildRightPane 方法的调用，右侧面板不再构建
+  // buildRightPane(BuildContext context) {
+  //   return Container(
+  //     color: Theme.of(context).scaffoldBackgroundColor,
+  //     child: ConnectionPage(),
+  //   );
+  // }
 
+  // 以下为其他界面构建方法（与右侧面板无关，保持不变）
   buildIDBoard(BuildContext context) {
     final model = gFFI.serverModel;
     return Container(
@@ -499,22 +500,12 @@ class _DesktopHomePageState extends State<DesktopHomePage>
           bind.mainIsInstalledDaemon(prompt: true);
         });
       }
-      //// Disable microphone configuration for macOS. We will request the permission when needed.
-      // else if ((await osxCanRecordAudio() !=
-      //     PermissionAuthorizeType.authorized)) {
-      //   return buildInstallCard("Permissions", "config_microphone", "Configure",
-      //       () async {
-      //     osxRequestAudio();
-      //     watchIsCanRecordAudio = true;
-      //   });
-      // }
     } else if (isLinux) {
       if (bind.isOutgoingOnly()) {
         return Container();
       }
       final LinuxCards = <Widget>[];
       if (bind.isSelinuxEnforcing()) {
-        // Check is SELinux enforcing, but show user a tip of is SELinux enabled for simple.
         final keyShowSelinuxHelpTip = "show-selinux-help-tip";
         if (bind.mainGetLocalOption(key: keyShowSelinuxHelpTip) != 'N') {
           LinuxCards.add(buildInstallCard(
@@ -556,7 +547,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         child: OutlinedButton(
           onPressed: () {
             SystemNavigator.pop(); // Close the application
-            // https://github.com/flutter/flutter/issues/66631
             if (isWindows) {
               exit(0);
             }
