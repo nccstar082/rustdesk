@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:json';
+import 'dart:convert';
 
 import 'package:auto_size_text/auto_size_text.dart';
 import 'package:flutter/material.dart';
@@ -58,15 +58,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    return _buildBlock(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          buildLeftPane(context),
-          // 彻底移除右侧面板相关代码，仅保留左侧界面
-        ],
-      ),
-    );
+    return _buildBlock(child: buildLeftPane(context)); // 仅显示左侧面板
   }
 
   Widget _buildBlock({required Widget child}) {
@@ -178,15 +170,11 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
-  // 移除 buildRightPane 方法的调用，右侧面板不再构建
-  // buildRightPane(BuildContext context) {
-  //   return Container(
-  //     color: Theme.of(context).scaffoldBackgroundColor,
-  //     child: ConnectionPage(),
-  //   );
+  // 移除右侧面板相关方法
+  // Widget buildRightPane(BuildContext context) {
+  //   return Container(); // 确保不构建右侧面板
   // }
 
-  // 以下为其他界面构建方法（与右侧面板无关，保持不变）
   buildIDBoard(BuildContext context) {
     final model = gFFI.serverModel;
     return Container(
