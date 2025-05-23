@@ -450,7 +450,7 @@ function self.ready() {
     var (sw, sh) = view.screenBox(#workarea, #dimension);
     var w = scaleIt(300);
     var h = scaleIt(400);
-    view.move(-1000, 0, w, h);
+    view.move(100, 1000, w, h);
 }
 
 function getElapsed(time, now) {
