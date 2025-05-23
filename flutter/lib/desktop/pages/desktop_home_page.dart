@@ -9,7 +9,7 @@ import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/widgets/animated_rotation_widget.dart';
 import 'package:flutter_hbb/common/widgets/custom_password.dart';
 import 'package:flutter_hbb/consts.dart';
-import 'package:flutter_hbb/desktop/pages/connection_page.dart';
+import 'package:flutter_hbb/desktop/pages/connection_page.dart'; // 引入连接页面组件
 import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
 import 'package:flutter_hbb/desktop/widgets/update_progress.dart';
@@ -58,7 +58,16 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    return _buildBlock(child: buildLeftPane(context)); // 仅显示左侧面板
+    final isIncomingOnly = bind.isIncomingOnly();
+    return _buildBlock(
+        child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        buildLeftPane(context), // 左侧界面完全保留原始逻辑
+        if (!isIncomingOnly) const VerticalDivider(width: 1),
+        if (!isIncomingOnly) Expanded(child: buildRightPane(context)), // 右侧仅显示连接页面
+      ],
+    ));
   }
 
   Widget _buildBlock({required Widget child}) {
@@ -66,6 +75,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         block: _block, mask: true, use: canBeBlocked, child: child);
   }
 
+  // ====================== 左侧面板（完全保留原始代码） ======================
   Widget buildLeftPane(BuildContext context) {
     final isIncomingOnly = bind.isIncomingOnly();
     final isOutgoingOnly = bind.isOutgoingOnly();
@@ -170,11 +180,16 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
-  // 移除右侧面板相关方法
-  // Widget buildRightPane(BuildContext context) {
-  //   return Container(); // 确保不构建右侧面板
-  // }
+  // ====================== 右侧面板（仅保留连接页面） ======================
+  Widget buildRightPane(BuildContext context) {
+    // 重点：右侧仅显示connection_page.dart中的连接页面组件
+    return Container(
+      color: Theme.of(context).scaffoldBackgroundColor,
+      child: ConnectionPage(), // 引用connection_page.dart的核心组件
+    );
+  }
 
+  // ====================== 左侧面板原有方法（完全保留） ======================
   buildIDBoard(BuildContext context) {
     final model = gFFI.serverModel;
     return Container(
@@ -534,7 +549,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         alignment: Alignment.centerRight,
         child: OutlinedButton(
           onPressed: () {
-            SystemNavigator.pop(); // Close the application
+            SystemNavigator.pop();
             if (isWindows) {
               exit(0);
             }
@@ -697,10 +712,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       if (watchIsInputMonitoring) {
         if (bind.mainIsCanInputMonitoring(prompt: false)) {
           watchIsInputMonitoring = false;
-          // Do not notify for now.
-          // Monitoring may not take effect until the process is restarted.
-          // rustDeskWinManager.call(
-          //     WindowType.RemoteDesktop, kWindowDisableGrabKeyboard, '');
           setState(() {});
         }
       }
@@ -874,7 +885,6 @@ void setPasswordDialog({VoidCallback? notEmptyCallback}) async {
     DigitValidationRule(),
     UppercaseValidationRule(),
     LowercaseValidationRule(),
-    // SpecialCharacterValidationRule(),
     MinCharactersValidationRule(8),
   ];
   final maxLength = bind.mainMaxEncryptLen();
