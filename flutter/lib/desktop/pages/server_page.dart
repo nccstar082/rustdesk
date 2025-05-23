@@ -11,10 +11,10 @@ import 'package:flutter_hbb/utils/platform_channel.dart';
 import 'package:get/get.dart';
 import 'package:percent_indicator/linear_percent_indicator.dart';
 import 'package:provider/provider.dart';
-import 'package:window_manager/window_manager.dart';
+import 'package:window_manager/window_manager.dart' as wm; // 重命名避免冲突
 import 'package:flutter_svg/flutter_svg.dart';
 
-import '../../common.dart';
+import '../../common.dart' as common; // 重命名基础库
 import '../../common/widgets/chat_page.dart';
 import '../../models/file_model.dart';
 import '../../models/platform_model.dart';
@@ -43,29 +43,31 @@ class _DesktopServerPageState extends State<DesktopServerPage>
 
   @override
   void initState() {
-    windowManager.addListener(this);
+    wm.WindowManager.instance.addListener(this);
     if (widget.hideWindow) {
       _initBackgroundWindow(); // 初始化后台窗口设置
     }
     super.initState();
   }
 
-  // 新增：后台窗口初始化方法
+  // 新增：后台窗口初始化方法（使用最新window_manager API）
   Future<void> _initBackgroundWindow() async {
-    await windowManager.ensureInitialized();
+    await wm.WindowManager.instance.ensureInitialized();
+    
     if (isWindows) {
-      await windowManager.setSkipTaskbar(true); // 隐藏任务栏图标
-      await windowManager.setShowInTaskbar(false); // 确保任务栏不显示
+      await wm.WindowManager.instance.setSkipTaskbar(true); // 隐藏任务栏图标
+      await wm.WindowManager.instance.setShowInTaskbar(false); // 任务栏不显示
     }
-    await windowManager.setWindowOpacity(0.0); // 完全透明
-    await windowManager.setAsFrameless(); // 移除系统边框
-    await windowManager.setWindowVisibility(WindowVisibility.hidden); // 窗口不可见
-    await windowManager.setResizable(false); // 禁止调整大小
+    
+    await wm.WindowManager.instance.setOpacity(0.0); // 完全透明
+    await wm.WindowManager.instance.setIsFrameless(true); // 无边框
+    await wm.WindowManager.instance.hide(); // 隐藏窗口
+    await wm.WindowManager.instance.setIsResizable(false); // 禁止调整大小
   }
 
   @override
   void dispose() {
-    windowManager.removeListener(this);
+    wm.WindowManager.instance.removeListener(this);
     super.dispose();
   }
 
@@ -77,8 +79,8 @@ class _DesktopServerPageState extends State<DesktopServerPage>
         if (isMacOS) {
           RdPlatformChannel.instance.terminate();
         } else {
-          windowManager.setPreventClose(false);
-          windowManager.close();
+          wm.WindowManager.instance.setPreventClose(false);
+          wm.WindowManager.instance.close();
         }
       });
     }
@@ -87,7 +89,7 @@ class _DesktopServerPageState extends State<DesktopServerPage>
 
   void onRemoveId(String id) {
     if (tabController.state.value.tabs.isEmpty && !widget.hideWindow) {
-      windowManager.close();
+      wm.WindowManager.instance.close();
     }
   }
 
@@ -113,9 +115,10 @@ class _DesktopServerPageState extends State<DesktopServerPage>
             body: ConnectionManager(hideCM: widget.hideWindow),
           );
           
+          // 使用重命名后的公共方法
           return isLinux
-              ? buildVirtualWindowFrame(context, body)
-              : workaroundWindowBorder(context, body);
+              ? common.buildVirtualWindowFrame(context, body)
+              : common.workaroundWindowBorder(context, body);
         },
       ),
     );
@@ -153,7 +156,7 @@ class ConnectionManagerState extends State<ConnectionManager>
               gFFI.chatModel.showChatPage(MessageKey(client.peerId, client.id));
             });
           }
-          windowManager.setTitle(getWindowNameWithId(client.peerId));
+          wm.WindowManager.instance.setTitle(getWindowNameWithId(client.peerId));
           gFFI.cmFileModel.updateCurrentClientId(client.id);
         }
       }
@@ -392,7 +395,7 @@ class _CmHeaderState extends State<_CmHeader> {
         left: 10.0,
         right: 5.0,
       ),
-      child: Text(client.peerId), // 示例内容，隐藏时不显示
+      child: Text(widget.client.peerId), // 正确引用client对象
     );
   }
 }
@@ -470,11 +473,11 @@ class __FileTransferLogPageState extends State<_FileTransferLogPage> {
   }
 }
 
-// 辅助方法（根据实际项目实现）
-Widget buildVirtualWindowFrame(BuildContext context, Widget body) {
-  return body; // Linux系统虚拟窗口边框逻辑
-}
+// 辅助方法（根据实际项目实现，需确保与common.dart不冲突）
+// Widget buildVirtualWindowFrame(BuildContext context, Widget body) {
+//   return body; // Linux系统虚拟窗口边框逻辑
+// }
 
-Widget workaroundWindowBorder(BuildContext context, Widget body) {
-  return body; // 其他系统边框适配逻辑
-}
+// Widget workaroundWindowBorder(BuildContext context, Widget body) {
+//   return body; // 其他系统边框适配逻辑
+// }
