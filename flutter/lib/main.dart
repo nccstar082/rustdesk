@@ -288,8 +288,15 @@ bool _isCmReadyToShow = false;
 
 showCmWindow({bool isStartup = false}) async {
   if (isStartup) {
-    WindowOptions windowOptions = getHiddenTitleBarWindowOptions(
-        size: kConnectionManagerWindowSizeClosedChat, alwaysOnTop: true);
+    // 修改此行，添加 skipTaskbar: true
+    WindowOptions windowOptions = WindowOptions(
+      size: kConnectionManagerWindowSizeClosedChat,
+      alwaysOnTop: true,
+      skipTaskbar: true, // 隐藏任务栏图标
+      titleBarStyle: TitleBarStyle.hidden,
+      backgroundColor: Colors.transparent,
+    );
+    
     await windowManager.waitUntilReadyToShow(windowOptions, null);
     bind.mainHideDock();
     await Future.wait([
@@ -315,8 +322,14 @@ showCmWindow({bool isStartup = false}) async {
 
 hideCmWindow({bool isStartup = false}) async {
   if (isStartup) {
-    WindowOptions windowOptions = getHiddenTitleBarWindowOptions(
-        size: kConnectionManagerWindowSizeClosedChat);
+    // 修改此行，添加 skipTaskbar: true
+    WindowOptions windowOptions = WindowOptions(
+      size: kConnectionManagerWindowSizeClosedChat,
+      skipTaskbar: true, // 隐藏任务栏图标
+      titleBarStyle: TitleBarStyle.hidden,
+      backgroundColor: Colors.transparent,
+    );
+    
     windowManager.setOpacity(0);
     await windowManager.waitUntilReadyToShow(windowOptions, null);
     bind.mainHideDock();
