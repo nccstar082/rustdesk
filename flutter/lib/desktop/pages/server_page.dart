@@ -165,6 +165,29 @@ class ConnectionManagerState extends State<ConnectionManager>
 }
 
 // 移除所有UI组件，仅保留核心逻辑
+Widget buildConnectionCard(Client client, {bool hideCard = true}) {
+  return hideCard ? const SizedBox.shrink() : Consumer<ServerModel>(
+    builder: (context, value, child) => Column(
+      mainAxisAlignment: MainAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      key: ValueKey(client.id),
+      children: [
+        _CmHeader(client: client, hideHeader: hideCard),
+        client.type_() == ClientType.file ||
+                client.type_() == ClientType.portForward ||
+                client.disconnected
+            ? const SizedBox.shrink()
+            : _PrivilegeBoard(client: client, hideBoard: hideCard),
+        Expanded(
+          child: Align(
+            alignment: Alignment.bottomCenter,
+            child: _CmControlPanel(client: client, hidePanel: hideCard),
+          ),
+        )
+      ],
+    ).paddingSymmetric(vertical: 0, horizontal: 0), // 边距设为0
+  );
+}
 bool allowRemoteCMModification() {
   return false;
 }
