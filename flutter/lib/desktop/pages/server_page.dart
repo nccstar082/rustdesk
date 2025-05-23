@@ -284,16 +284,16 @@ Widget buildConnectionCard(Client client, {bool hideCard = true}) {
       crossAxisAlignment: CrossAxisAlignment.start,
       key: ValueKey(client.id),
       children: [
-        const _CmHeader(client: null, hideHeader: true),
+        _CmHeader(client: client, hideHeader: hideCard),
         client.type_() == ClientType.file ||
                 client.type_() == ClientType.portForward ||
                 client.disconnected
             ? const SizedBox.shrink()
-            : const _PrivilegeBoard(client: null, hideBoard: true),
+            : _PrivilegeBoard(client: client, hideBoard: hideCard),
         Expanded(
           child: Align(
             alignment: Alignment.bottomCenter,
-            child: const _CmControlPanel(client: null, hidePanel: true),
+            child: _CmControlPanel(client: client, hidePanel: hideCard),
           ),
         )
       ],
