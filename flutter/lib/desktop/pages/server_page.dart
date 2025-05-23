@@ -188,6 +188,77 @@ Widget buildConnectionCard(Client client, {bool hideCard = true}) {
     ).paddingSymmetric(vertical: 0, horizontal: 0), // 边距设为0
   );
 }
+class _CmHeader extends StatefulWidget {
+  final Client client;
+  final bool hideHeader; // 控制头部是否隐藏
+
+  const _CmHeader({Key? key, required this.client, this.hideHeader = true}) : super(key: key);
+
+  @override
+  State<_CmHeader> createState() => _CmHeaderState();
+}
+
+class _CmHeaderState extends State<_CmHeader> {
+  @override
+  Widget build(BuildContext context) {
+    if (widget.hideHeader) return const SizedBox.shrink(); // 隐藏头部
+
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(0), // 圆角设为0
+        gradient: LinearGradient(
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
+          colors: [
+            Color(0xff00bfe1),
+            Color(0xff0071ff),
+          ],
+        ),
+      ),
+      margin: EdgeInsets.symmetric(horizontal: 0, vertical: 0), // 边距设为0
+      padding: EdgeInsets.only(
+        top: 0, // 内边距设为0
+        bottom: 0,
+        left: 0,
+        right: 0,
+      ),
+      width: 0, // 宽度设为0
+      height: 0, // 高度设为0
+      child: const SizedBox.shrink(), // 防止内容渲染
+    );
+  }
+}
+class _PrivilegeBoard extends StatefulWidget {
+  final Client client;
+  final bool hideBoard; // 控制权限面板是否隐藏
+
+  const _PrivilegeBoard({Key? key, required this.client, this.hideBoard = true}) : super(key: key);
+
+  @override
+  State<StatefulWidget> createState() => _PrivilegeBoardState();
+}
+
+class _PrivilegeBoardState extends State<_PrivilegeBoard> {
+  @override
+  Widget build(BuildContext context) {
+    if (widget.hideBoard) return const SizedBox.shrink(); // 隐藏权限面板
+
+    return const SizedBox.shrink(); // 空实现
+  }
+}
+class _CmControlPanel extends StatelessWidget {
+  final Client client;
+  final bool hidePanel; // 控制控制面板是否隐藏
+
+  const _CmControlPanel({Key? key, required this.client, this.hidePanel = true}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    if (hidePanel) return const SizedBox.shrink(); // 隐藏控制面板
+
+    return const SizedBox.shrink(); // 空实现
+  }
+}
 bool allowRemoteCMModification() {
   return false;
 }
