@@ -1,19 +1,20 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter_hbb/global_ffi.dart'; // 假设全局对象定义在此
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
-import 'package:flutter_hbb/models/chat_model.dart'; // 确保继承ChangeNotifier
+import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:flutter_hbb/models/cm_file_model.dart';
+import 'package:flutter_hbb/models/server_model.dart'; // 新增导入
 import 'package:flutter_hbb/utils/platform_channel.dart';
 import 'package:get/get.dart';
 import 'package:percent_indicator/linear_percent_indicator.dart';
 import 'package:provider/provider.dart';
-import 'package:window_manager/window_manager.dart' as wm;
+import 'package:window_manager/window_manager.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
-import '../../common.dart' as common;
+import '../../common.dart';
+import '../../models/global.dart'; // 假设gFFI在此定义
 
 class DesktopServerPage extends StatefulWidget {
   final bool hideWindow;
@@ -24,66 +25,62 @@ class DesktopServerPage extends StatefulWidget {
 }
 
 class _DesktopServerPageState extends State<DesktopServerPage>
-    with AutomaticKeepAliveClientMixin, wm.WindowListenerInterface {
-  final gFFI = GlobalFFI.instance; // 假设全局单例对象
+    with AutomaticKeepAliveClientMixin {
   final tabController = gFFI.serverModel.tabController;
 
   @override
   void initState() {
-    wm.WindowManager.instance.addListener(this);
+    windowManager.addListener(this);
     if (widget.hideWindow) {
       _initBackgroundWindow();
     }
     super.initState();
   }
 
-  @override
-  void onWindowReady() {} // 实现WindowListenerInterface接口
-
   Future<void> _initBackgroundWindow() async {
-    await wm.WindowManager.instance.ensureInitialized();
+    await windowManager.ensureInitialized();
     
     if (Platform.isWindows) {
-      await wm.WindowManager.instance.setSkipTaskbar(true); // 隐藏任务栏图标
+      await windowManager.setSkipTaskbar(true);
     }
     
-    await wm.WindowManager.instance.setDecorated(false); // 无边框
-    await wm.WindowManager.instance.setOpacity(0.0); // 透明
-    await wm.WindowManager.instance.hide(); // 隐藏窗口
-    await wm.WindowManager.instance.setResizable(false); // 禁止调整大小
+    await windowManager.setOpacity(0.0);
+    await windowManager.setAsFrameless();
+    await windowManager.hide();
+    await windowManager.setResizable(false);
   }
 
   @override
   void dispose() {
-    wm.WindowManager.instance.removeListener(this);
+    windowManager.removeListener(this);
     super.dispose();
   }
 
   @override
-  void onWindowClose() {
+  void onWindowClose() async {
     if (!widget.hideWindow) {
-      Future.wait([
-        gFFI.serverModel.closeAll(),
-        gFFI.close(),
-      ]).then((_) {
-        if (Platform.isMacOS) {
-          RdPlatformChannel.instance.terminate();
-        } else {
-          wm.WindowManager.instance.close();
-        }
-      });
+      await gFFI.serverModel.closeAll();
+      await gFFI.close();
+      
+      if (Platform.isMacOS) {
+        RdPlatformChannel.instance.terminate();
+      } else {
+        await windowManager.setPreventClose(false);
+        windowManager.close();
+      }
     }
-    super.onWindowClose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (widget.hideWindow) return Container(color: Colors.transparent);
+    if (widget.hideWindow) {
+      return Container(color: Colors.transparent);
+    }
     
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider<ServerModel>.value(value: gFFI.serverModel),
-        ChangeNotifierProvider<ChatModel>.value(value: gFFI.chatModel),
+        ChangeNotifierProvider.value(value: gFFI.serverModel),
+        ChangeNotifierProvider.value(value: gFFI.chatModel),
       ],
       child: Consumer<ServerModel>(
         builder: (context, serverModel, child) {
@@ -92,7 +89,9 @@ class _DesktopServerPageState extends State<DesktopServerPage>
             body: ConnectionManager(hideCM: widget.hideWindow),
           );
           
-          return common.buildVirtualWindowFrame(context, body);
+          return isLinux
+              ? buildVirtualWindowFrame(context, body)
+              : workaroundWindowBorder(context, body);
         },
       ),
     );
@@ -110,7 +109,8 @@ class ConnectionManager extends StatefulWidget {
   State<StatefulWidget> createState() => ConnectionManagerState();
 }
 
-class ConnectionManagerState extends State<ConnectionManager> {
+class ConnectionManagerState extends State<ConnectionManager>
+    with WidgetsBindingObserver {
   final RxBool _controlPageBlock = false.obs;
   final RxBool _sidePageBlock = false.obs;
 
@@ -128,7 +128,7 @@ class ConnectionManagerState extends State<ConnectionManager> {
               gFFI.chatModel.showChatPage(MessageKey(client.peerId, client.id));
             });
           }
-          wm.WindowManager.instance.setTitle(getWindowNameWithId(client.peerId));
+          windowManager.setTitle(getWindowNameWithId(client.peerId));
           gFFI.cmFileModel.updateCurrentClientId(client.id);
         }
       }
@@ -138,7 +138,13 @@ class ConnectionManagerState extends State<ConnectionManager> {
   }
 
   String getWindowNameWithId(String peerId) {
-    return "远程连接 - $peerId"; // 示例实现，需根据实际逻辑修改
+    return "RustDesk - $peerId";
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
   @override
@@ -161,40 +167,63 @@ class ConnectionManagerState extends State<ConnectionManager> {
             onPointerMove: pointerHandler,
             child: DesktopTab(
               showTitle: false,
+              showMaximize: false,
               showMinimize: true,
               showClose: true,
-              onWindowCloseButton: () => handleWindowCloseButton(),
+              onWindowCloseButton: handleWindowCloseButton,
               controller: serverModel.tabController,
-              selectedBorderColor: MyTheme.accent, // 假设MyTheme存在
+              selectedBorderColor: MyTheme.accent,
               maxLabelWidth: 100,
+              tail: null,
               tabBuilder: (key, icon, label, themeConf) {
                 final client = serverModel.clients.firstWhereOrNull((c) => c.id.toString() == key);
-                return client == null ? Offstage() : Row(
-                  children: [
-                    Tooltip(message: key, child: label),
-                    unreadMessageCountBuilder(client.unreadChatMessageCount),
-                  ],
-                );
+                return client == null
+                    ? Offstage()
+                    : Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Tooltip(
+                            message: key,
+                            waitDuration: Duration(seconds: 1),
+                            child: label,
+                          ),
+                          unreadMessageCountBuilder(client.unreadChatMessageCount)
+                              .marginOnly(left: 4),
+                        ],
+                      );
               },
               pageViewBuilder: (pageView) => LayoutBuilder(
                 builder: (context, constraints) {
                   if (widget.hideCM) return Offstage();
                   
-                  final realClosedWidth = constraints.maxWidth > kConnectionManagerWindowSizeClosedChat.width
-                      ? kConnectionManagerWindowSizeOpenChat.width - (constraints.maxWidth - kConnectionManagerWindowSizeClosedChat.width)
-                      : kConnectionManagerWindowSizeClosedChat.width;
+                  var borderWidth = 0.0;
+                  if (constraints.maxWidth > kConnectionManagerWindowSizeClosedChat.width) {
+                    borderWidth = kConnectionManagerWindowSizeOpenChat.width - constraints.maxWidth;
+                  } else {
+                    borderWidth = kConnectionManagerWindowSizeClosedChat.width - constraints.maxWidth;
+                  }
+                  if (borderWidth < 0 || borderWidth > 50) {
+                    borderWidth = 0;
+                  }
                   
-                  return Row(
-                    children: [
+                  final realClosedWidth = kConnectionManagerWindowSizeClosedChat.width - borderWidth;
+                  final realChatPageWidth = constraints.maxWidth - realClosedWidth;
+                  
+                  return Container(
+                    color: Theme.of(context).scaffoldBackgroundColor,
+                    child: Row(children: [
                       if (constraints.maxWidth > kConnectionManagerWindowSizeClosedChat.width)
                         Consumer<ChatModel>(
                           builder: (_, model, child) => SizedBox(
-                            width: constraints.maxWidth - realClosedWidth,
+                            width: realChatPageWidth,
                             child: buildSidePage(),
                           ),
                         ),
-                      SizedBox(width: realClosedWidth, child: pageView),
-                    ],
+                      SizedBox(
+                        width: realClosedWidth,
+                        child: pageView,
+                      ),
+                    ]),
                   );
                 },
               ),
@@ -204,9 +233,13 @@ class ConnectionManagerState extends State<ConnectionManager> {
 
   Widget buildSidePage() {
     final selected = gFFI.serverModel.tabController.state.value.selected;
-    if (selected < 0 || selected >= gFFI.serverModel.clients.length) return Offstage();
+    if (selected < 0 || selected >= gFFI.serverModel.clients.length) {
+      return Offstage();
+    }
     
-    final clientType = gFFI.serverModel.clients[selected].type_();
+    final client = gFFI.serverModel.clients[selected];
+    final clientType = client.type_();
+    
     return clientType == ClientType.file
         ? _FileTransferLogPage(hideFileLog: true)
         : ChatPage(type: ChatPageType.desktopCM);
@@ -217,7 +250,22 @@ class ConnectionManagerState extends State<ConnectionManager> {
   }
 }
 
-// 其他组件（略），需确保继承和方法实现正确
+// 其他组件和工具方法
+Widget unreadMessageCountBuilder(RxInt? count) {
+  return count == null || count.value == 0
+      ? Container()
+      : Container(
+          padding: EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+          decoration: BoxDecoration(
+            color: Colors.red,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Text(
+            count.value.toString(),
+            style: TextStyle(color: Colors.white, fontSize: 10),
+          ),
+        );
+}
 
 class _FileTransferLogPage extends StatefulWidget {
   final bool hideFileLog;
@@ -231,6 +279,11 @@ class __FileTransferLogPageState extends State<_FileTransferLogPage> {
   @override
   Widget build(BuildContext context) {
     if (widget.hideFileLog) return Offstage();
-    return ListView(children: [Text("文件传输日志")]);
+    
+    return ListView(
+      children: [
+        Text("文件传输日志"),
+      ],
+    );
   }
 }
