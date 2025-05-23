@@ -255,8 +255,8 @@ class ConnectionManagerState extends State<ConnectionManager>
     }
     final clientType = gFFI.serverModel.clients[selected].type_();
     return clientType == ClientType.file
-        ? const _FileTransferLogPage(hideFileLog: true)
-        : const ChatPage(type: ChatPageType.desktopCM);
+        ? _FileTransferLogPage(hideFileLog: true) // 隐藏文件日志
+        : ChatPage(type: ChatPageType.desktopCM);
   }
 
   Widget _buildKeyEventBlock(Widget child) {
@@ -320,10 +320,10 @@ class _CloseButton extends StatelessWidget {
 }
 
 class _CmHeader extends StatefulWidget {
-  final Client? client;
+  final Client client;
   final bool hideHeader; // 控制头部是否隐藏
 
-  const _CmHeader({Key? key, this.client, this.hideHeader = true}) : super(key: key);
+  const _CmHeader({Key? key, required this.client, this.hideHeader = true}) : super(key: key);
 
   @override
   State<_CmHeader> createState() => _CmHeaderState();
@@ -332,7 +332,9 @@ class _CmHeader extends StatefulWidget {
 class _CmHeaderState extends State<_CmHeader> {
   @override
   Widget build(BuildContext context) {
-    return widget.hideHeader ? const SizedBox.shrink() : Container(
+    if (widget.hideHeader) return const SizedBox.shrink(); // 隐藏头部
+
+    return Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(0), // 圆角设为0
         gradient: LinearGradient(
@@ -359,10 +361,10 @@ class _CmHeaderState extends State<_CmHeader> {
 }
 
 class _PrivilegeBoard extends StatefulWidget {
-  final Client? client;
+  final Client client;
   final bool hideBoard; // 控制权限面板是否隐藏
 
-  const _PrivilegeBoard({Key? key, this.client, this.hideBoard = true}) : super(key: key);
+  const _PrivilegeBoard({Key? key, required this.client, this.hideBoard = true}) : super(key: key);
 
   @override
   State<StatefulWidget> createState() => _PrivilegeBoardState();
@@ -371,27 +373,25 @@ class _PrivilegeBoard extends StatefulWidget {
 class _PrivilegeBoardState extends State<_PrivilegeBoard> {
   @override
   Widget build(BuildContext context) {
-    return widget.hideBoard ? const SizedBox.shrink() : Container(
-      width: 0, // 宽度设为0
-      height: 0, // 高度设为0
-    );
+    if (widget.hideBoard) return const SizedBox.shrink(); // 隐藏权限面板
+
+    return const SizedBox.shrink(); // 空实现
   }
 }
 
 const double buttonBottomMargin = 0; // 按钮边距设为0
 
 class _CmControlPanel extends StatelessWidget {
-  final Client? client;
+  final Client client;
   final bool hidePanel; // 控制控制面板是否隐藏
 
-  const _CmControlPanel({Key? key, this.client, this.hidePanel = true}) : super(key: key);
+  const _CmControlPanel({Key? key, required this.client, this.hidePanel = true}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
-    return hidePanel ? const SizedBox.shrink() : Container(
-      width: 0, // 宽度设为0
-      height: 0, // 高度设为0
-    );
+    if (hidePanel) return const SizedBox.shrink(); // 隐藏控制面板
+
+    return const SizedBox.shrink(); // 空实现
   }
 }
 
@@ -413,9 +413,8 @@ class _FileTransferLogPage extends StatefulWidget {
 class __FileTransferLogPageState extends State<_FileTransferLogPage> {
   @override
   Widget build(BuildContext context) {
-    return widget.hideFileLog ? const SizedBox.shrink() : Container(
-      width: 0, // 宽度设为0
-      height: 0, // 高度设为0
-    );
+    if (widget.hideFileLog) return const SizedBox.shrink(); // 隐藏文件日志
+
+    return const SizedBox.shrink();
   }
 }
