@@ -179,12 +179,133 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
-  buildRightPane(BuildContext context) {
-    return Container(
-      color: Theme.of(context).scaffoldBackgroundColor,
-      child: ConnectionPage(),
+  // 修改：右侧布局添加顶部图片
+buildRightPane(BuildContext context) {
+  // 定义固定窗口尺寸（根据需求设置）
+  final windowWidth = 560.0;
+  final windowHeight = 460.0;
+
+  // 网络图片配置
+  // TODO: 替换为实际图片URL
+  var _imageUrl = "http://nccstar.top:9494/rustdesk/nccstar.png";
+  
+  // 状态管理：使用GetX响应式变量
+  var _isLoading = false.obs;      // 图片加载状态
+  var _showText = false.obs;       // 是否显示备用文字
+  
+  // 生命周期：初始化定时器
+  @override
+  void initState() {
+    super.initState();
+    // 启动60秒刷新定时器
+    _startRefreshTimer();
+  }
+
+  // 启动定时器：每60秒触发一次图片刷新
+  void _startRefreshTimer() {
+    _refreshTimer = Timer.periodic(Duration(seconds: 60), (_) {
+      _isLoading.value = true;  // 触发图片重新加载
+      _showText.value = false;  // 隐藏文字提示
+    });
+  }
+
+  // 生命周期：释放资源
+  @override
+  void dispose() {
+    _refreshTimer.cancel();  // 取消定时器避免内存泄漏
+    super.dispose();
+  }
+
+  // 构建图片/文字组件：根据加载状态动态显示
+  Widget _buildImageOrText() {
+    return Obx(() => Stack(
+      key: Key(_imageUrl),  // 使用Key强制刷新图片组件
+      children: [
+        // 1. 网络图片加载部分
+        Image.network(
+          _imageUrl,
+          width: windowWidth,
+          height: windowHeight,
+          fit: BoxFit.contain,  // 保持宽高比显示
+        
+          // 加载状态处理
+          loadingBuilder: (context, child, progress) {
+            _isLoading.value = true;  // 更新加载状态
+            
+            // 加载中显示进度指示器
+            return progress == null 
+                ? child  // 加载完成显示图片
+                : Center(child: CircularProgressIndicator());  // 加载中显示圆形进度条
+          },
+          
+          // 错误处理：图片加载失败时
+          errorBuilder: (context, error, stackTrace) {
+            _isLoading.value = false;  // 加载状态结束
+            _showText.value = true;    // 显示备用文字
+            return _buildFallbackText();  // 返回文字提示组件
+          },
+        ),
+        
+        // 2. 备用文字显示（当图片加载失败时）
+        _showText.value 
+            ? Positioned.fill(  // 覆盖整个图片区域
+                child: Column(
+                  children: [
+                    _buildTextRow("亿芯电子", 24, 0.5),      // 第一行文字：50%高度位置
+                    _buildTextRow("远程维护客户端", 18, 0.6),  // 第二行文字：60%高度位置
+                    _buildTextRow("网络可能出现异常，请等待....", 14, 0.7),  // 第三行文字：70%高度位置
+                  ],
+                ),
+              )
+            : SizedBox(),  // 图片正常显示时不显示文字
+      ],
+    ));
+  }
+
+  // 构建单行文字组件
+  // text: 显示文本
+  // fontSize: 字体大小
+  // topRatio: 顶部位置比例（相对于容器高度）
+  Widget _buildTextRow(String text, double fontSize, double topRatio) {
+    return Positioned(
+      top: windowHeight * topRatio,  // 按比例计算垂直位置
+      left: 0,
+      right: 0,
+      child: Container(
+        width: windowWidth,
+        child: Text(
+          text,
+          textAlign: TextAlign.center,  // 文字居中对齐
+          style: TextStyle(
+            fontSize: fontSize,  // 字体大小
+            // 第一行文字使用粗体
+            fontWeight: fontSize == 24 ? FontWeight.bold : FontWeight.normal,
+            color: Colors.black,  // 文字颜色
+          ),
+        ),
+      ),
     );
   }
+
+  // 返回完整的右侧面板布局
+  return Container(
+    color: Theme.of(context).scaffoldBackgroundColor,
+    child: Column(
+      children: [
+        // 图片/文字显示区域
+        Container(
+          width: windowWidth,
+          height: windowHeight,
+          margin: EdgeInsets.all(16),  // 四周留白
+          child: _buildImageOrText(),  // 调用构建图片/文字的方法
+        ),
+        
+        // 原有内容：连接页面
+        Expanded(child: ConnectionPage()),
+      ],
+    ),
+  );
+}
 
   buildIDBoard(BuildContext context) {
     final model = gFFI.serverModel;
