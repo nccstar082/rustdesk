@@ -193,23 +193,23 @@ buildRightPane(BuildContext context) {
   var _isLoading = false.obs;      // 图片加载状态
   var _showText = false.obs;       // 是否显示备用文字
   
-  // 声明定时器变量（移到类成员位置）
+  // 声明定时器变量
   Timer? _refreshTimer;
 
-  // 生命周期：初始化定时器（调整方法顺序）
-  @override
-  void initState() {
-    super.initState();
-    // 启动60秒刷新定时器
-    _startRefreshTimer();
-  }
-
-  // 启动定时器：每60秒触发一次图片刷新（移到initState之前）
+  // 启动定时器：每60秒触发一次图片刷新（移至initState之前）
   void _startRefreshTimer() {
     _refreshTimer = Timer.periodic(Duration(seconds: 60), (_) {
       _isLoading.value = true;  // 触发图片重新加载
       _showText.value = false;  // 隐藏文字提示
     });
+  }
+
+  // 生命周期：初始化定时器
+  @override
+  void initState() {
+    super.initState();
+    // 启动60秒刷新定时器
+    _startRefreshTimer();
   }
 
   // 生命周期：释放资源
@@ -221,83 +221,81 @@ buildRightPane(BuildContext context) {
 
   // 构建图片/文字组件：根据加载状态动态显示
   Widget _buildImageOrText() {
-    // 修复_buildTextRow调用顺序问题（方法定义提前）
+    // 定义内部方法_buildTextRow
     Widget _buildTextRow(String text, double fontSize, double topRatio) {
       return Positioned(
-        top: windowHeight * topRatio,  // 按比例计算垂直位置
+        top: windowHeight * topRatio,
         left: 0,
         right: 0,
         child: Container(
           width: windowWidth,
           child: Text(
             text,
-            textAlign: TextAlign.center,  // 文字居中对齐
+            textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: fontSize,  // 字体大小
-              // 第一行文字使用粗体
+              fontSize: fontSize,
               fontWeight: fontSize == 24 ? FontWeight.bold : FontWeight.normal,
-              color: Colors.black,  // 文字颜色
+              color: Colors.black,
             ),
           ),
         ),
       );
     }
-
     return Obx(() => Stack(
-      key: Key(_imageUrl),  // 使用Key强制刷新图片组件
+      key: Key(_imageUrl),
       children: [
         // 1. 网络图片加载部分
         Image.network(
           _imageUrl,
           width: windowWidth,
           height: windowHeight,
-          fit: BoxFit.contain,  // 保持宽高比显示
-        
+          fit: BoxFit.contain,
+          
           // 加载状态处理
           loadingBuilder: (context, child, progress) {
-            _isLoading.value = true;  // 更新加载状态
+            _isLoading.value = true;
             
-            // 加载中显示进度指示器
             return progress == null 
-                ? child  // 加载完成显示图片
-                : Center(child: CircularProgressIndicator());  // 加载中显示圆形进度条
+                ? child 
+                : Center(child: CircularProgressIndicator());
           },
           
-          // 错误处理：图片加载失败时（直接构建文字，移除未定义的_buildFallbackText）
+          // 错误处理：图片加载失败时
           errorBuilder: (context, error, stackTrace) {
-            _isLoading.value = false;  // 加载状态结束
-            _showText.value = true;    // 显示备用文字
-            return _showText.value 
-                ? Positioned.fill(  // 覆盖整个图片区域
-                    child: Column(
-                      children: [
-                        _buildTextRow("亿芯电子", 24, 0.5),      // 第一行文字：50%高度位置
-                        _buildTextRow("远程维护客户端", 18, 0.6),  // 第二行文字：60%高度位置
-                        _buildTextRow("网络可能出现异常，请等待....", 14, 0.7),  // 第三行文字：70%高度位置
-                      ],
-                    ),
-                  )
-                : SizedBox();  // 图片正常显示时不显示文字;
+            _isLoading.value = false;
+            _showText.value = true;
+            
+            // 直接构建备用文字
+            return Positioned.fill(
+              child: Column(
+                children: [
+                  _buildTextRow("亿芯电子", 24, 0.5),
+                  _buildTextRow("远程维护客户端", 18, 0.6),
+                  _buildTextRow("网络可能出现异常，请等待....", 14, 0.7),
+                ],
+              ),
+            );
           },
         ),
         
-        // 2. 备用文字显示（当图片加载失败时）
+        // 2. 备用文字显示
         _showText.value 
-            ? Positioned.fill(  // 覆盖整个图片区域
+            ? Positioned.fill(
                 child: Column(
                   children: [
-                    _buildTextRow("亿芯电子", 24, 0.5),      // 第一行文字：50%高度位置
-                    _buildTextRow("远程维护客户端", 18, 0.6),  // 第二行文字：60%高度位置
-                    _buildTextRow("网络可能出现异常，请等待....", 14, 0.7),  // 第三行文字：70%高度位置
+                    _buildTextRow("亿芯电子", 24, 0.5),
+                    _buildTextRow("远程维护客户端", 18, 0.6),
+                    _buildTextRow("网络可能出现异常，请等待....", 14, 0.7),
                   ],
                 ),
               )
-            : SizedBox(),  // 图片正常显示时不显示文字
+            : SizedBox(),
       ],
     ));
   }
 
-  // 返回完整的右侧面板布局
+
+// 返回完整的右侧面板布局
   return Container(
     color: Theme.of(context).scaffoldBackgroundColor,
     child: Column(
@@ -306,8 +304,8 @@ buildRightPane(BuildContext context) {
         Container(
           width: windowWidth,
           height: windowHeight,
-          margin: EdgeInsets.all(16),  // 四周留白
-          child: _buildImageOrText(),  // 调用构建图片/文字的方法
+          margin: EdgeInsets.all(16),
+          child: _buildImageOrText(),
         ),
         
         // 原有内容：连接页面
@@ -316,6 +314,7 @@ buildRightPane(BuildContext context) {
     ),
   );
 }
+
 
 
   buildIDBoard(BuildContext context) {
