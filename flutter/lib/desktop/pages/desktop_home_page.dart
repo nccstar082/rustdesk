@@ -193,7 +193,10 @@ buildRightPane(BuildContext context) {
   var _isLoading = false.obs;      // 图片加载状态
   var _showText = false.obs;       // 是否显示备用文字
   
-  // 生命周期：初始化定时器
+  // 声明定时器变量（移到类成员位置）
+  Timer? _refreshTimer;
+
+  // 生命周期：初始化定时器（调整方法顺序）
   @override
   void initState() {
     super.initState();
@@ -201,7 +204,7 @@ buildRightPane(BuildContext context) {
     _startRefreshTimer();
   }
 
-  // 启动定时器：每60秒触发一次图片刷新
+  // 启动定时器：每60秒触发一次图片刷新（移到initState之前）
   void _startRefreshTimer() {
     _refreshTimer = Timer.periodic(Duration(seconds: 60), (_) {
       _isLoading.value = true;  // 触发图片重新加载
@@ -212,12 +215,34 @@ buildRightPane(BuildContext context) {
   // 生命周期：释放资源
   @override
   void dispose() {
-    _refreshTimer.cancel();  // 取消定时器避免内存泄漏
+    _refreshTimer?.cancel();  // 取消定时器避免内存泄漏
     super.dispose();
   }
 
   // 构建图片/文字组件：根据加载状态动态显示
   Widget _buildImageOrText() {
+    // 修复_buildTextRow调用顺序问题（方法定义提前）
+    Widget _buildTextRow(String text, double fontSize, double topRatio) {
+      return Positioned(
+        top: windowHeight * topRatio,  // 按比例计算垂直位置
+        left: 0,
+        right: 0,
+        child: Container(
+          width: windowWidth,
+          child: Text(
+            text,
+            textAlign: TextAlign.center,  // 文字居中对齐
+            style: TextStyle(
+              fontSize: fontSize,  // 字体大小
+              // 第一行文字使用粗体
+              fontWeight: fontSize == 24 ? FontWeight.bold : FontWeight.normal,
+              color: Colors.black,  // 文字颜色
+            ),
+          ),
+        ),
+      );
+    }
+
     return Obx(() => Stack(
       key: Key(_imageUrl),  // 使用Key强制刷新图片组件
       children: [
@@ -238,11 +263,21 @@ buildRightPane(BuildContext context) {
                 : Center(child: CircularProgressIndicator());  // 加载中显示圆形进度条
           },
           
-          // 错误处理：图片加载失败时
+          // 错误处理：图片加载失败时（直接构建文字，移除未定义的_buildFallbackText）
           errorBuilder: (context, error, stackTrace) {
             _isLoading.value = false;  // 加载状态结束
             _showText.value = true;    // 显示备用文字
-            return _buildFallbackText();  // 返回文字提示组件
+            return _showText.value 
+                ? Positioned.fill(  // 覆盖整个图片区域
+                    child: Column(
+                      children: [
+                        _buildTextRow("亿芯电子", 24, 0.5),      // 第一行文字：50%高度位置
+                        _buildTextRow("远程维护客户端", 18, 0.6),  // 第二行文字：60%高度位置
+                        _buildTextRow("网络可能出现异常，请等待....", 14, 0.7),  // 第三行文字：70%高度位置
+                      ],
+                    ),
+                  )
+                : SizedBox();  // 图片正常显示时不显示文字;
           },
         ),
         
@@ -260,31 +295,6 @@ buildRightPane(BuildContext context) {
             : SizedBox(),  // 图片正常显示时不显示文字
       ],
     ));
-  }
-
-  // 构建单行文字组件
-  // text: 显示文本
-  // fontSize: 字体大小
-  // topRatio: 顶部位置比例（相对于容器高度）
-  Widget _buildTextRow(String text, double fontSize, double topRatio) {
-    return Positioned(
-      top: windowHeight * topRatio,  // 按比例计算垂直位置
-      left: 0,
-      right: 0,
-      child: Container(
-        width: windowWidth,
-        child: Text(
-          text,
-          textAlign: TextAlign.center,  // 文字居中对齐
-          style: TextStyle(
-            fontSize: fontSize,  // 字体大小
-            // 第一行文字使用粗体
-            fontWeight: fontSize == 24 ? FontWeight.bold : FontWeight.normal,
-            color: Colors.black,  // 文字颜色
-          ),
-        ),
-      ),
-    );
   }
 
   // 返回完整的右侧面板布局
@@ -306,6 +316,7 @@ buildRightPane(BuildContext context) {
     ),
   );
 }
+
 
   buildIDBoard(BuildContext context) {
     final model = gFFI.serverModel;
