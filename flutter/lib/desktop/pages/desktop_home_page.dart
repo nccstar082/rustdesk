@@ -1001,7 +1001,6 @@ return YourWidget(); // 直接返回顶层定义的组件
       ),
     );
   }
-}
 
 void setPasswordDialog({VoidCallback? notEmptyCallback}) async {
   final pw = await bind.mainGetPermanentPassword();
