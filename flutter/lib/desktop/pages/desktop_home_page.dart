@@ -182,8 +182,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   // 修改：右侧布局添加顶部图片
 buildRightPane(BuildContext context) {
   // 定义固定窗口尺寸（根据需求设置）
-  final windowWidth = 560.0;
-  final windowHeight = 460.0;
+//  final windowWidth = 560.0;
+//  final windowHeight = 460.0;
 
   // 网络图片配置
   // TODO: 替换为实际图片URL
