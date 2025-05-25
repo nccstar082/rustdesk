@@ -182,7 +182,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
 
   buildRightPane(BuildContext context) {
 	return const YourWidget(); 
-    );
   }
 
   buildIDBoard(BuildContext context) {
