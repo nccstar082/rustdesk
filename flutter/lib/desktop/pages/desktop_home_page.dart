@@ -298,10 +298,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
-class YourWidget extends StatefulWidget {
-  @override
-  _YourWidgetState createState() => _YourWidgetState();
-}
+
 
 class _YourWidgetState extends State<YourWidget> {
   Widget buildRightPane(BuildContext context) {
