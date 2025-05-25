@@ -228,7 +228,7 @@ buildRightPane(BuildContext context) {
         left: 0,
         right: 0,
         child: Container(
-          width: windowWidth,
+          width: double.infinity,
           child: Text(
             text,
             textAlign: TextAlign.center,
