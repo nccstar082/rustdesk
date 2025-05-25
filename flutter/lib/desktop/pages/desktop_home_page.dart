@@ -309,7 +309,12 @@ buildRightPane(BuildContext context) {
         ),
         
         // 原有内容：连接页面
-        Expanded(child: ConnectionPage()),
+        Expanded(
+          child: Align(
+          alignment: Alignment.bottomCenter, // 对齐到底部
+          child: ConnectionPage(),
+         ),
+       ),
       ],
     ),
   );
