@@ -168,7 +168,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   var watchIsInputMonitoring = false;
   var watchIsCanRecordAudio = false;
   Timer? _updateTimer;
-  bool isCardClosed = false;
 
   final RxBool _editHover = false.obs;
   final RxBool _block = false.obs;
