@@ -1,3 +1,0 @@
-flutter:
-  assets:
-    - images/nccstar.png  # 直接指向项目根目录下的 images 文件夹
