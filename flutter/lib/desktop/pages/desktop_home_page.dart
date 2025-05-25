@@ -298,9 +298,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
-
-
-class _YourWidgetState extends State<YourWidget> {
   Widget buildRightPane(BuildContext context) {
 return YourWidget(); // 直接返回顶层定义的组件
 }
