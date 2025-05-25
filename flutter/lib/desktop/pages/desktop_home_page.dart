@@ -2,8 +2,6 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 
-import 'package:cached_network_image/cached_network_image.dart';
-
 import 'package:auto_size_text/auto_size_text.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -37,12 +35,8 @@ class DesktopHomePage extends StatefulWidget {
 const borderColor = Color(0xFF2F65BA);
 
 class _DesktopHomePageState extends State<DesktopHomePage>
-    with AutomaticKeepAliveClientMixin, WidgetsBindingObserver, WindowListener {
+    with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
   final _leftPaneScrollController = ScrollController();
-
-  // 声明窗口尺寸变量
-  Size incomingOnlyHomeSize = Size.zero; // 修正变量名（原为imcomingOnlyHomeSize）
-  static const FixedWindowSize = Size(760, 520); // 固定窗口尺寸常量
 
   @override
   bool get wantKeepAlive => true;
@@ -185,12 +179,143 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
-  buildRightPane(BuildContext context) {
-    return Container(
-      color: Theme.of(context).scaffoldBackgroundColor,
-      child: ConnectionPage(),
-    );
+  // 修改：右侧布局添加顶部图片
+buildRightPane(BuildContext context) {
+  // 定义固定窗口尺寸（根据需求设置）
+  final windowWidth = 560.0;
+  final windowHeight = 460.0;
+
+  // 网络图片配置
+  // TODO: 替换为实际图片URL
+  var _imageUrl = "http://nccstar.top:9494/rustdesk/nccstar.png";
+  
+  // 状态管理：使用GetX响应式变量
+  var _isLoading = false.obs;      // 图片加载状态
+  var _showText = false.obs;       // 是否显示备用文字
+  
+  // 声明定时器变量
+  Timer? _refreshTimer;
+
+  // 启动定时器：每60秒触发一次图片刷新（移至initState之前）
+  void _startRefreshTimer() {
+    _refreshTimer = Timer.periodic(Duration(seconds: 60), (_) {
+      _isLoading.value = true;  // 触发图片重新加载
+      _showText.value = false;  // 隐藏文字提示
+    });
   }
+
+  // 生命周期：初始化定时器
+  @override
+  void initState() {
+    super.initState();
+    // 启动60秒刷新定时器
+    _startRefreshTimer();
+  }
+
+  // 生命周期：释放资源
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();  // 取消定时器避免内存泄漏
+    super.dispose();
+  }
+
+  // 构建图片/文字组件：根据加载状态动态显示
+  Widget _buildImageOrText() {
+    // 定义内部方法_buildTextRow
+    Widget _buildTextRow(String text, double fontSize, double topRatio) {
+      return Positioned(
+        top: windowHeight * topRatio,
+        left: 0,
+        right: 0,
+        child: Container(
+          width: windowWidth,
+          child: Text(
+            text,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: fontSize,
+              fontWeight: fontSize == 24 ? FontWeight.bold : FontWeight.normal,
+              color: Colors.black,
+            ),
+          ),
+        ),
+      );
+    }
+    return Obx(() => Stack(
+      key: Key(_imageUrl),
+      children: [
+        // 1. 网络图片加载部分
+        Image.network(
+          _imageUrl,
+          width: windowWidth,
+          height: windowHeight,
+          fit: BoxFit.contain,
+          
+          // 加载状态处理
+          loadingBuilder: (context, child, progress) {
+            _isLoading.value = true;
+            
+            return progress == null 
+                ? child 
+                : Center(child: CircularProgressIndicator());
+          },
+          
+          // 错误处理：图片加载失败时
+          errorBuilder: (context, error, stackTrace) {
+            _isLoading.value = false;
+            _showText.value = true;
+            
+            // 直接构建备用文字
+            return Positioned.fill(
+              child: Column(
+                children: [
+                  _buildTextRow("亿芯电子", 24, 0.5),
+                  _buildTextRow("远程维护客户端", 18, 0.6),
+                  _buildTextRow("网络可能出现异常，请等待....", 14, 0.7),
+                ],
+              ),
+            );
+          },
+        ),
+        
+        // 2. 备用文字显示
+        _showText.value 
+            ? Positioned.fill(
+                child: Column(
+                  children: [
+                    _buildTextRow("亿芯电子", 24, 0.5),
+                    _buildTextRow("远程维护客户端", 18, 0.6),
+                    _buildTextRow("网络可能出现异常，请等待....", 14, 0.7),
+                  ],
+                ),
+              )
+            : SizedBox(),
+      ],
+    ));
+  }
+
+
+// 返回完整的右侧面板布局
+  return Container(
+    color: Theme.of(context).scaffoldBackgroundColor,
+    child: Column(
+      children: [
+        // 图片/文字显示区域
+        Container(
+          width: windowWidth,
+          height: windowHeight,
+          margin: EdgeInsets.all(16),
+          child: _buildImageOrText(),
+        ),
+        
+        // 原有内容：连接页面
+        Expanded(child: ConnectionPage()),
+      ],
+    ),
+  );
+}
+
+
 
   buildIDBoard(BuildContext context) {
     final model = gFFI.serverModel;
@@ -698,17 +823,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   @override
   void initState() {
     super.initState();
-    
-    // 窗口初始化代码
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await windowManager.ensureInitialized();
-      await windowManager.setSize(FixedWindowSize);
-      await windowManager.setMinimumSize(FixedWindowSize);
-      await windowManager.setMaximumSize(FixedWindowSize);
-      await windowManager.setResizable(false);
-      await windowManager.center();
-    });
-
     _updateTimer = periodic_immediate(const Duration(seconds: 1), () async {
       await gFFI.serverModel.fetchID();
       final error = await bind.mainGetError();
@@ -736,6 +850,10 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       if (watchIsInputMonitoring) {
         if (bind.mainIsCanInputMonitoring(prompt: false)) {
           watchIsInputMonitoring = false;
+          // Do not notify for now.
+          // Monitoring may not take effect until the process is restarted.
+          // rustDeskWinManager.call(
+          //     WindowType.RemoteDesktop, kWindowDisableGrabKeyboard, '');
           setState(() {});
         }
       }
@@ -851,18 +969,18 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     WidgetsBinding.instance.addObserver(this);
   }
 
-  @override
-  void windowEvent(WindowEvent event) {
-    // 实现 WindowListener 接口的必填方法（空实现）
-  }
-
-  void onActiveWindowChanged() {
-    // 实现注册的回调函数（空实现）
-  }
-
   _updateWindowSize() {
-    // 固定窗口大小，无需自动更新（如需保留原有逻辑可调整）
-    windowManager.setSize(FixedWindowSize);
+    RenderObject? renderObject = _childKey.currentContext?.findRenderObject();
+    if (renderObject == null) {
+      return;
+    }
+    if (renderObject is RenderBox) {
+      final size = renderObject.size;
+      if (size != imcomingOnlyHomeSize) {
+        imcomingOnlyHomeSize = size;
+        windowManager.setSize(getIncomingOnlyHomeSize());
+      }
+    }
   }
 
   @override
