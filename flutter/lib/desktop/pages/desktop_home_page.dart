@@ -156,7 +156,8 @@ const borderColor = Color(0xFF2F65BA);
 class _DesktopHomePageState extends State<DesktopHomePage>
     with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
   final _leftPaneScrollController = ScrollController();
-
+  bool isCardClosed = false;
+  
   @override
   bool get wantKeepAlive => true;
   var systemError = '';
