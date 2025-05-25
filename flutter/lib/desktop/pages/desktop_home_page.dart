@@ -247,8 +247,8 @@ buildRightPane(BuildContext context) {
         // 1. 网络图片加载部分
         Image.network(
           _imageUrl,
-          width: windowWidth,
-          height: windowHeight,
+          width: double.infinity,
+          height: double.infinity,
           fit: BoxFit.contain,
           
           // 加载状态处理
