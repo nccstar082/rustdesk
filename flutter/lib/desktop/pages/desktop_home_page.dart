@@ -302,8 +302,8 @@ buildRightPane(BuildContext context) {
       children: [
         // 图片/文字显示区域
         Container(
-          width: windowWidth,
-          height: windowHeight,
+          width: double.infinity,
+          height: double.infinity, 
           margin: EdgeInsets.all(16),
           child: _buildImageOrText(),
         ),
