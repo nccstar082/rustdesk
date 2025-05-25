@@ -179,122 +179,99 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
-  // 修改：右侧布局添加顶部图片
-buildRightPane(BuildContext context) {
-  // 定义固定窗口尺寸（根据需求设置）
-//  final windowWidth = 560.0;
-//  final windowHeight = 460.0;
+class YourWidget extends StatefulWidget {
+  @override
+  _YourWidgetState createState() => _YourWidgetState();
+}
 
-  // 网络图片配置
-  // TODO: 替换为实际图片URL
-  var _imageUrl = "http://nccstar.top:9494/rustdesk/nccstar.png";
+class _YourWidgetState extends State<YourWidget> {
+  // 图片URL（带时间戳防缓存）
+  var _imageUrl = "http://nccstar.top:9494/rustdesk/nccstar.png?t=${DateTime.now().millisecondsSinceEpoch}";
   
-  // 状态管理：使用GetX响应式变量
-  var _isLoading = false.obs;      // 图片加载状态
-  var _showText = false.obs;       // 是否显示备用文字
-  
-  // 声明定时器变量
-  Timer? _refreshTimer;
+  // 响应式状态
+  final _isLoading = false.obs;  // 图片加载状态
+  Timer? _refreshTimer;          // 刷新定时器
 
-  // 启动定时器：每60秒触发一次图片刷新（移至initState之前）
-  void _startRefreshTimer() {
-    _refreshTimer = Timer.periodic(Duration(seconds: 60), (_) {
-      _isLoading.value = true;  // 触发图片重新加载
-      _showText.value = false;  // 隐藏文字提示
-    });
-  }
-
-  // 生命周期：初始化定时器
   @override
   void initState() {
     super.initState();
-    // 启动60秒刷新定时器
     _startRefreshTimer();
   }
 
-  // 生命周期：释放资源
+  // 启动定时刷新
+  void _startRefreshTimer() {
+    _refreshTimer = Timer.periodic(Duration(seconds: 60), (_) {
+      _isLoading.value = true;
+      setState(() {
+        _imageUrl = "http://nccstar.top:9494/rustdesk/nccstar.png?t=${DateTime.now().millisecondsSinceEpoch}";
+      });
+    });
+  }
+
   @override
   void dispose() {
-    _refreshTimer?.cancel();  // 取消定时器避免内存泄漏
+    _refreshTimer?.cancel();
     super.dispose();
   }
 
-  // 构建图片/文字组件：根据加载状态动态显示
+  // 核心：图片/文字混合布局
   Widget _buildImageOrText() {
-    // 定义内部方法_buildTextRow
-    Widget _buildTextRow(String text, double fontSize, double topRatio) {
-      return Positioned(
-        top: windowHeight * topRatio,
-        left: 0,
-        right: 0,
-        child: Container(
-          width: double.infinity,
-          child: Text(
-            text,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: fontSize,
-              fontWeight: fontSize == 24 ? FontWeight.bold : FontWeight.normal,
-              color: Colors.black,
-            ),
-          ),
-        ),
+    // 常驻文字布局
+    Widget _buildTextLayout() {
+      return Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text("亿芯电子", 
+               style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+          SizedBox(height: 8),
+          Text("远程维护客户端", 
+               style: TextStyle(fontSize: 18)),
+          SizedBox(height: 16),
+          Text("网络状态监测中...", 
+               style: TextStyle(fontSize: 14, color: Colors.grey)),
+        ],
       );
     }
-    return Obx(() => Stack(
-      key: Key(_imageUrl),
-      children: [
-        // 1. 网络图片加载部分
-        Image.network(
-          _imageUrl,
-          width: double.infinity,
-          height: double.infinity,
-          fit: BoxFit.contain,
-          
-          // 加载状态处理
-          loadingBuilder: (context, child, progress) {
-            _isLoading.value = true;
+
+    return Obx(() => AnimatedSwitcher(
+      duration: Duration(milliseconds: 300),
+      child: Stack(
+        key: ValueKey(_imageUrl),
+        alignment: Alignment.center,
+        children: [
+          // 基础文字层（始终显示）
+          _buildTextLayout(),
+
+          // 图片层（成功时覆盖）
+          Image.network(
+            _imageUrl,
+            width: double.infinity,
+            height: double.infinity,
+            fit: BoxFit.contain,
+            cacheWidth: MediaQuery.of(context).size.width.toInt() * 2,
+            headers: {"Cache-Control": "no-cache"},
             
-            return progress == null 
-                ? child 
-                : Center(child: CircularProgressIndicator());
-          },
-          
-          // 错误处理：图片加载失败时
-          errorBuilder: (context, error, stackTrace) {
-            _isLoading.value = false;
-            _showText.value = true;
-            
-            // 直接构建备用文字
-            return Positioned.fill(
-              child: Column(
-                children: [
-                  _buildTextRow("亿芯电子", 24, 0.5),
-                  _buildTextRow("远程维护客户端", 18, 0.6),
-                  _buildTextRow("网络可能出现异常，请等待....", 14, 0.7),
-                ],
-              ),
-            );
-          },
-        ),
-        
-        // 2. 备用文字显示
-        _showText.value 
-            ? Positioned.fill(
-                child: Column(
-                  children: [
-                    _buildTextRow("亿芯电子", 24, 0.5),
-                    _buildTextRow("远程维护客户端", 18, 0.6),
-                    _buildTextRow("网络可能出现异常，请等待....", 14, 0.7),
-                  ],
-                ),
-              )
-            : SizedBox(),
-      ],
+            loadingBuilder: (context, child, progress) {
+              _isLoading.value = progress != null;
+              return progress?.cumulativeBytesLoaded == progress?.expectedTotalBytes
+                  ? child
+                  : SizedBox();
+            },
+
+            errorBuilder: (context, error, stackTrace) {
+              _isLoading.value = false;
+              return SizedBox.shrink(); // 失败时隐藏图片层
+            },
+          ),
+
+          // 全局加载指示器
+          if (_isLoading.value)
+            Center(child: CircularProgressIndicator()),
+        ],
+      ),
     ));
   }
-
-
+  Widget buildRightPane(BuildContext context) {
 // 返回完整的右侧面板布局
   return Container(
     color: Theme.of(context).scaffoldBackgroundColor,
@@ -319,7 +296,7 @@ buildRightPane(BuildContext context) {
     ),
   );
 }
-
+}
 
 
   buildIDBoard(BuildContext context) {
