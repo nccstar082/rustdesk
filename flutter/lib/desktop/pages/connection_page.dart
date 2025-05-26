@@ -282,7 +282,7 @@ class _ConnectionPageState extends State<ConnectionPage>
   @override
   void onWindowEnterFullScreen() {
     // Remove edge border by setting the value to zero.
-    stateGlobal.resizeEdgeSize.value = 0;
+    stateGlobal.resizeEdgeSize.value = 20;
   }
 
   @override
@@ -353,8 +353,8 @@ class _ConnectionPageState extends State<ConnectionPage>
 
   /// UI for the remote ID TextField.
   /// Search for a peer.
-  Widget _buildRemoteIDTextField(BuildContext context) {
-/*     var w = Container(
+/*  Widget _buildRemoteIDTextField(BuildContext context) {
+     var w = Container(
       width: 320 + 20 * 2,
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 22),
       decoration: BoxDecoration(
@@ -612,6 +612,6 @@ class _ConnectionPageState extends State<ConnectionPage>
       ),
     );
     return Container(
-        constraints: const BoxConstraints(maxWidth: 600), child: w); */
-  }
+        constraints: const BoxConstraints(maxWidth: 600), child: w); 
+  }*/
 }
