@@ -145,8 +145,8 @@ void runMainApp(bool startService) async {
     isMainWindow: true,
     resizable: false,  // 新增禁止调节大小参数
     size: Size(760, 580),  // 固定窗口尺寸
-    minimumSize: Size(760, 580),
-    maximumSize: Size(760, 580)
+    minSize: Size(760, 580),
+    maxSize: Size(760, 580)
   );
   windowManager.waitUntilReadyToShow(windowOptions, () async {
     // Restore the location of the main window before window hide or show.
