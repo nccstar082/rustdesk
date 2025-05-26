@@ -317,7 +317,7 @@ class _ConnectionPageState extends State<ConnectionPage>
 
 //连接页面构建方法
 
-  @override
+/*  @override
   Widget build(BuildContext context) {
     final isOutgoingOnly = bind.isOutgoingOnly();
     return Column(
@@ -340,9 +340,9 @@ class _ConnectionPageState extends State<ConnectionPage>
       ],
     );
   }
-
+*/
 //连接方法和远程 ID 输入 UI
-
+/*
   /// Callback for the connect button.
   /// Connects to the selected peer.
   void onConnect({bool isFileTransfer = false, bool isViewCamera = false}) {
@@ -350,7 +350,7 @@ class _ConnectionPageState extends State<ConnectionPage>
     connect(context, id,
         isFileTransfer: isFileTransfer, isViewCamera: isViewCamera);
   }
-
+*/
   /// UI for the remote ID TextField.
   /// Search for a peer.
 /*  Widget _buildRemoteIDTextField(BuildContext context) {
