@@ -318,6 +318,10 @@ showCmWindow({bool isStartup = false}) async {
       windowOnTop(null);
     }
   }
+  }
+  }
+  }
+  }
 }
 
 hideCmWindow({bool isStartup = false}) async {
@@ -403,6 +407,11 @@ WindowOptions getHiddenTitleBarWindowOptions(
   // we do not hide titlebar on win7 because of the frame overflow.
   if (kUseCompatibleUiMode) {
     defaultTitleBarStyle = TitleBarStyle.normal;
+  }
+  
+    // 添加主窗口默认大小
+  if (isMainWindow && size == null) {
+    size = const Size(1024, 768); // 设置默认宽度和高度
   }
   return WindowOptions(
     size: size,
