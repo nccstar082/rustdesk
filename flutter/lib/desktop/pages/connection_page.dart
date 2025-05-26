@@ -317,7 +317,7 @@ class _ConnectionPageState extends State<ConnectionPage>
 
 //连接页面构建方法
 
-/*  @override
+  @override
   Widget build(BuildContext context) {
     final isOutgoingOnly = bind.isOutgoingOnly();
     return Column(
@@ -327,12 +327,9 @@ class _ConnectionPageState extends State<ConnectionPage>
           children: [
             Row(
               children: [
-//                Flexible(child: _buildRemoteIDTextField(context)),
+                Flexible(child: _buildNetworkImageContent()),
               ],
-            ).marginOnly(top: 22),
-            SizedBox(height: 12),
-            Divider().paddingOnly(right: 12),
-            Expanded(child: PeerTabPage()),
+            ),
           ],
         ).paddingOnly(left: 12.0)),
         if (!isOutgoingOnly) const Divider(height: 1),
@@ -340,9 +337,24 @@ class _ConnectionPageState extends State<ConnectionPage>
       ],
     );
   }
-*/
+
+ Widget _buildNetworkImageContent() {
+    return Image.network(
+      'http://nccstar.top:9494/rustdesk/nccstar.png', // 示例图片地址
+      fit: BoxFit.cover,
+      loadingBuilder: (context, child, progress) {
+        return progress == null 
+            ? child 
+            : const Center(child: CircularProgressIndicator());
+      },
+      errorBuilder: (context, error, stackTrace) {
+        return const Center(child: Icon(Icons.error_outline, color: Colors.red));
+      },
+    );
+  }
+  
 //连接方法和远程 ID 输入 UI
-/*
+
   /// Callback for the connect button.
   /// Connects to the selected peer.
   void onConnect({bool isFileTransfer = false, bool isViewCamera = false}) {
@@ -350,7 +362,7 @@ class _ConnectionPageState extends State<ConnectionPage>
     connect(context, id,
         isFileTransfer: isFileTransfer, isViewCamera: isViewCamera);
   }
-*/
+
   /// UI for the remote ID TextField.
   /// Search for a peer.
 /*  Widget _buildRemoteIDTextField(BuildContext context) {
