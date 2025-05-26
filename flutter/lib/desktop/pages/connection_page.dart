@@ -327,7 +327,7 @@ class _ConnectionPageState extends State<ConnectionPage>
           children: [
             Row(
               children: [
-                Flexible(child: _buildRemoteIDTextField(context)),
+//                Flexible(child: _buildRemoteIDTextField(context)),
               ],
             ).marginOnly(top: 22),
             SizedBox(height: 12),
