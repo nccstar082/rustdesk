@@ -141,8 +141,13 @@ void runMainApp(bool startService) async {
   runApp(App());
 
   // Set window option.
-  WindowOptions windowOptions =
-      getHiddenTitleBarWindowOptions(isMainWindow: true);
+    WindowOptions windowOptions = getHiddenTitleBarWindowOptions(
+    isMainWindow: true,
+    size: Size(760, 580),
+    minimumSize: Size(760, 580),
+    maximumSize: Size(760, 580),
+    resizable: false
+  );
   windowManager.waitUntilReadyToShow(windowOptions, () async {
     // Restore the location of the main window before window hide or show.
     await restoreWindowPosition(WindowType.Main);
