@@ -404,6 +404,10 @@ WindowOptions getHiddenTitleBarWindowOptions(
   if (kUseCompatibleUiMode) {
     defaultTitleBarStyle = TitleBarStyle.normal;
   }
+      // 主窗口强制设置固定尺寸
+  if (isMainWindow) {
+    size = const Size(760, 580); // 覆盖所有传入的size参数
+  }
   return WindowOptions(
     size: size,
     center: center,
