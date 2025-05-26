@@ -145,8 +145,6 @@ void runMainApp(bool startService) async {
     isMainWindow: true,
     resizable: false,  // 新增禁止调节大小参数
     size: Size(760, 580),  // 固定窗口尺寸
-    minSize: Size(760, 580),
-    maxSize: Size(760, 580)
   );
   windowManager.waitUntilReadyToShow(windowOptions, () async {
     // Restore the location of the main window before window hide or show.
@@ -293,7 +291,6 @@ bool _isCmReadyToShow = false;
 
 showCmWindow({bool isStartup = false}) async {
   if (isStartup) {
-    // 修改此行，添加 skipTaskbar: true
     WindowOptions windowOptions = WindowOptions(
       size: kConnectionManagerWindowSizeClosedChat,
       alwaysOnTop: true,
@@ -403,7 +400,7 @@ WindowOptions getHiddenTitleBarWindowOptions(
     Size? size,
     bool center = false,
     bool? alwaysOnTop,
-    bool resizable = false}) {  // 新增 resizable 参数
+//    bool resizable = false}) {  // 新增 resizable 参数
   var defaultTitleBarStyle = TitleBarStyle.hidden;
   // we do not hide titlebar on win7 because of the frame overflow.
   if (kUseCompatibleUiMode) {
@@ -416,9 +413,8 @@ WindowOptions getHiddenTitleBarWindowOptions(
     skipTaskbar: false,
     titleBarStyle: defaultTitleBarStyle,
     alwaysOnTop: alwaysOnTop,
-	resizable: resizable,  // 应用禁止调节参数
-    minimumSize: size,      // 固定最小尺寸
-    maximumSize: size,       // 固定最大尺寸
+//	resizable: resizable,  // 应用禁止调节参数
+
   );
 }
 
