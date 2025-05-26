@@ -141,11 +141,8 @@ void runMainApp(bool startService) async {
   runApp(App());
 
   // Set window option.
-  WindowOptions windowOptions = getHiddenTitleBarWindowOptions(
-    isMainWindow: true,
-    resizable: false,  // 新增禁止调节大小参数
-    size: Size(760, 580),  // 固定窗口尺寸
-  );
+  WindowOptions windowOptions =
+      getHiddenTitleBarWindowOptions(isMainWindow: true);
   windowManager.waitUntilReadyToShow(windowOptions, () async {
     // Restore the location of the main window before window hide or show.
     await restoreWindowPosition(WindowType.Main);
@@ -291,6 +288,7 @@ bool _isCmReadyToShow = false;
 
 showCmWindow({bool isStartup = false}) async {
   if (isStartup) {
+    // 修改此行，添加 skipTaskbar: true
     WindowOptions windowOptions = WindowOptions(
       size: kConnectionManagerWindowSizeClosedChat,
       alwaysOnTop: true,
@@ -324,6 +322,7 @@ showCmWindow({bool isStartup = false}) async {
 
 hideCmWindow({bool isStartup = false}) async {
   if (isStartup) {
+    // 修改此行，添加 skipTaskbar: true
     WindowOptions windowOptions = WindowOptions(
       size: kConnectionManagerWindowSizeClosedChat,
       skipTaskbar: true, // 隐藏任务栏图标
@@ -399,8 +398,7 @@ WindowOptions getHiddenTitleBarWindowOptions(
     {bool isMainWindow = false,
     Size? size,
     bool center = false,
-    bool? alwaysOnTop,
-//    bool resizable = false}) {  // 新增 resizable 参数
+    bool? alwaysOnTop}) {
   var defaultTitleBarStyle = TitleBarStyle.hidden;
   // we do not hide titlebar on win7 because of the frame overflow.
   if (kUseCompatibleUiMode) {
@@ -413,8 +411,6 @@ WindowOptions getHiddenTitleBarWindowOptions(
     skipTaskbar: false,
     titleBarStyle: defaultTitleBarStyle,
     alwaysOnTop: alwaysOnTop,
-//	resizable: resizable,  // 应用禁止调节参数
-
   );
 }
 
