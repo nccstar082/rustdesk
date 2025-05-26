@@ -63,6 +63,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
     super.dispose();
   }
 
+//在线状态组件构建方法
   @override
   Widget build(BuildContext context) {
     final isIncomingOnly = bind.isIncomingOnly();
@@ -152,6 +153,9 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
           : basicWidget()),
     ).paddingOnly(right: isIncomingOnly ? 8 : 0);
   }
+//
+
+//状态消息构建和更新方法
 
   _buildConnStatusMsg() {
     widget.onSvcStatusChanged?.call();
@@ -187,6 +191,10 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
   }
 }
 
+//
+
+
+//连接页面组件
 /// Connection page for connecting to a remote peer.
 class ConnectionPage extends StatefulWidget {
   const ConnectionPage({Key? key}) : super(key: key);
@@ -215,6 +223,8 @@ class _ConnectionPageState extends State<ConnectionPage>
   Iterable<Peer> _autocompleteOpts = [];
 
   final _menuOpen = false.obs;
+
+//连接页面初始化和销毁
 
   @override
   void initState() {
@@ -253,6 +263,8 @@ class _ConnectionPageState extends State<ConnectionPage>
     super.dispose();
   }
 
+//窗口事件处理
+
   @override
   void onWindowEvent(String eventName) {
     super.onWindowEvent(eventName);
@@ -287,6 +299,8 @@ class _ConnectionPageState extends State<ConnectionPage>
     bind.mainOnMainWindowClose();
   }
 
+//焦点变化处理
+
   void onFocusChanged() {
     _idInputFocused.value = _idFocusNode.hasFocus;
     if (_idFocusNode.hasFocus) {
@@ -300,6 +314,8 @@ class _ConnectionPageState extends State<ConnectionPage>
           TextSelection(baseOffset: 0, extentOffset: textLength);
     }
   }
+
+//连接页面构建方法
 
   @override
   Widget build(BuildContext context) {
@@ -325,6 +341,8 @@ class _ConnectionPageState extends State<ConnectionPage>
     );
   }
 
+//连接方法和远程 ID 输入 UI
+
   /// Callback for the connect button.
   /// Connects to the selected peer.
   void onConnect({bool isFileTransfer = false, bool isViewCamera = false}) {
@@ -336,7 +354,7 @@ class _ConnectionPageState extends State<ConnectionPage>
   /// UI for the remote ID TextField.
   /// Search for a peer.
   Widget _buildRemoteIDTextField(BuildContext context) {
-    var w = Container(
+/*     var w = Container(
       width: 320 + 20 * 2,
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 22),
       decoration: BoxDecoration(
@@ -594,6 +612,6 @@ class _ConnectionPageState extends State<ConnectionPage>
       ),
     );
     return Container(
-        constraints: const BoxConstraints(maxWidth: 600), child: w);
+        constraints: const BoxConstraints(maxWidth: 600), child: w); */
   }
 }
