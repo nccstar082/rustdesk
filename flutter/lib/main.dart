@@ -141,8 +141,18 @@ void runMainApp(bool startService) async {
   runApp(App());
 
   // Set window option.
-  WindowOptions windowOptions =
-      getHiddenTitleBarWindowOptions(isMainWindow: true);
+// WindowOptions windowOptions =
+//      getHiddenTitleBarWindowOptions(isMainWindow: true);
+
+WindowOptions windowOptions = WindowOptions(
+  size: Size(760, 580),      // 初始尺寸
+  minimumSize: Size(760, 580), // 最小尺寸
+  maximumSize: Size(760, 580), // 最大尺寸
+  resizable: false,           // 禁止调整大小
+  titleBarStyle: TitleBarStyle.hidden,
+  backgroundColor: (isMacOS && true) ? null : Colors.transparent,
+);...................................................................
+
   windowManager.waitUntilReadyToShow(windowOptions, () async {
     // Restore the location of the main window before window hide or show.
     await restoreWindowPosition(WindowType.Main);
@@ -290,7 +300,11 @@ showCmWindow({bool isStartup = false}) async {
   if (isStartup) {
     // 修改此行，添加 skipTaskbar: true
     WindowOptions windowOptions = WindowOptions(
-      size: kConnectionManagerWindowSizeClosedChat,
+//      size: kConnectionManagerWindowSizeClosedChat,
+      size: Size(760, 580), // 统一尺寸
+      minimumSize: Size(760, 580),
+      maximumSize: Size(760, 580),
+      resizable: false,
       alwaysOnTop: true,
       skipTaskbar: true, // 隐藏任务栏图标
       titleBarStyle: TitleBarStyle.hidden,
@@ -397,6 +411,8 @@ void runInstallPage() async {
 WindowOptions getHiddenTitleBarWindowOptions(
     {bool isMainWindow = false,
     Size? size,
+	Size? minimumSize, //新增
+    Size? maximumSize, //新增
     bool center = false,
     bool? alwaysOnTop}) {
   var defaultTitleBarStyle = TitleBarStyle.hidden;
@@ -405,12 +421,15 @@ WindowOptions getHiddenTitleBarWindowOptions(
     defaultTitleBarStyle = TitleBarStyle.normal;
   }
   return WindowOptions(
-    size: size,
+    size: size ?? Size(760, 580),          // 默认尺寸
+    minimumSize: minimumSize ?? Size(760, 580), // 强制最小尺寸
+    maximumSize: maximumSize ?? Size(760, 580), // 强制最大尺寸
     center: center,
     backgroundColor: (isMacOS && isMainWindow) ? null : Colors.transparent,
     skipTaskbar: false,
     titleBarStyle: defaultTitleBarStyle,
     alwaysOnTop: alwaysOnTop,
+    resizable: false, // 全局禁止调整大小
   );
 }
 
