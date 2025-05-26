@@ -408,9 +408,6 @@ WindowOptions getHiddenTitleBarWindowOptions(
   if (kUseCompatibleUiMode) {
     defaultTitleBarStyle = TitleBarStyle.normal;
   }
-  
-    // 添加主窗口默认大小
-
   return WindowOptions(
     size: size,
     center: center,
