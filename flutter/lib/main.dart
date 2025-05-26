@@ -319,10 +319,6 @@ showCmWindow({bool isStartup = false}) async {
     }
   }
   }
-  }
-  }
-  }
-}
 
 hideCmWindow({bool isStartup = false}) async {
   if (isStartup) {
