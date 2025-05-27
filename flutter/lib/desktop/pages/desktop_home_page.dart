@@ -111,6 +111,13 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         },
       ),
       buildPluginEntry(),
+      // 新增：将右侧的 ConnectionPage 复制到左侧底部
+    Container(
+      color: Theme.of(context).scaffoldBackgroundColor, // 保持原背景色
+      child: ConnectionPage(), // 原封不动添加
+    ),
+    
+    // 处理传入模式下的内容（如有需要）
     ];
     if (isIncomingOnly) {
       children.addAll([
@@ -182,7 +189,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   buildRightPane(BuildContext context) {
     return Container(
       color: Theme.of(context).scaffoldBackgroundColor,
-      child: ConnectionPage(),
+      child: _buildNetworkImageContent(),
     );
   }
 

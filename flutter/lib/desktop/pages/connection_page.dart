@@ -317,26 +317,16 @@ class _ConnectionPageState extends State<ConnectionPage>
 
 //连接页面构建方法
 
-  @override
-  Widget build(BuildContext context) {
-    final isOutgoingOnly = bind.isOutgoingOnly();
-    return Column(
-      children: [
-        Expanded(
-            child: Column(
-          children: [
-            Row(
-              children: [
-                Flexible(child: _buildNetworkImageContent()),
-              ],
-            ),
-          ],
-        ).paddingOnly(left: 0)),
-        if (!isOutgoingOnly) const Divider(height: 1),
-        if (!isOutgoingOnly) OnlineStatusWidget()
-      ],
-    );
-  }
+@override
+Widget build(BuildContext context) {
+  final isOutgoingOnly = bind.isOutgoingOnly();
+  return Column(
+    children: [
+      if (!isOutgoingOnly) const Divider(height: 1),
+      if (!isOutgoingOnly) const OnlineStatusWidget()
+    ],
+  );
+}
 
  Widget _buildNetworkImageContent() {
     return Image.network(
