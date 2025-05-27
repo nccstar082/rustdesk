@@ -144,6 +144,10 @@ void runMainApp(bool startService) async {
   WindowOptions windowOptions =
       getHiddenTitleBarWindowOptions(isMainWindow: true);
   windowManager.waitUntilReadyToShow(windowOptions, () async {
+    // 强制设置窗口尺寸
+  await windowManager.setSize(const Size(760, 580));
+  await windowManager.setMinimumSize(const Size(760, 580));
+  await windowManager.setMaximumSize(const Size(760, 580));
     // Restore the location of the main window before window hide or show.
     await restoreWindowPosition(WindowType.Main);
     // Check the startup argument, if we successfully handle the argument, we keep the main window hidden.
@@ -409,7 +413,7 @@ WindowOptions getHiddenTitleBarWindowOptions(
     size: size,
     minimumSize: const Size(760, 580), // 最小尺寸
     maximumSize: const Size(760, 580), // 最大尺寸
-    resizable: false, // 完全禁用窗口调节
+//    resizable: false, // 完全禁用窗口调节
     center: center,
     backgroundColor: (isMacOS && isMainWindow) ? null : Colors.transparent,
     skipTaskbar: true,
