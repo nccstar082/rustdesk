@@ -407,7 +407,7 @@ WindowOptions getHiddenTitleBarWindowOptions(
   }
   return WindowOptions(
     size: size,
-	minimumSize: const Size(760, 580), // 最小尺寸
+    minimumSize: const Size(760, 580), // 最小尺寸
     maximumSize: const Size(760, 580), // 最大尺寸
     resizable: false, // 完全禁用窗口调节
     center: center,
