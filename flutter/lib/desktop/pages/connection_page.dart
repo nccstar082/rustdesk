@@ -88,28 +88,25 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Text(', ', style: TextStyle(fontSize: em)),
-                Flexible(
+                Expanded( // 把Flexible替换成Expanded，让组件占满剩余空间
                   child: InkWell(
                     onTap: onUsePublicServerGuide,
-                    child: Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            translate('setup_server_tip'),
-                            textAlign: TextAlign.right, // 文本内容靠右对齐
-                            style: TextStyle(
-                                decoration: TextDecoration.underline,
-                                fontSize: em),
-                          ),
-                        ),
-                      ],
+                    child: Container(
+                      alignment: Alignment.centerRight, // 利用Container的alignment属性实现右对齐
+                      child: Text(
+                        translate('setup_server_tip'),
+                        style: TextStyle(
+                        decoration: TextDecoration.underline,
+                        fontSize: em,
+                      ),
                     ),
-                  ),
-                )
-              ],
-            ),
-          ),
-        );
+                ),
+              ),
+            )
+          ],
+        ),
+      ),
+    );
 
     basicWidget() => Row(
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -318,20 +315,30 @@ class _ConnectionPageState extends State<ConnectionPage>
 
 //连接页面构建方法
 
-@override
-Widget build(BuildContext context) {
-  final isOutgoingOnly = bind.isOutgoingOnly();
-  return Column(
-    children: [
-      if (!isOutgoingOnly) const Divider(height: 1),
-      if (!isOutgoingOnly) const OnlineStatusWidget()
-    ],
-  );
-}
+  @override
+  Widget build(BuildContext context) {
+    final isOutgoingOnly = bind.isOutgoingOnly();
+    return Column(
+      children: [
+        Expanded(
+            child: Column(
+          children: [
+            Row(
+              children: [
+                Flexible(child: _buildNetworkImageContent()),
+              ],
+            ),
+          ],
+        ).paddingOnly(left: 0)),
+        if (!isOutgoingOnly) const Divider(height: 1),
+        if (!isOutgoingOnly) OnlineStatusWidget()
+      ],
+    );
+  }
 
  Widget _buildNetworkImageContent() {
     return Image.network(
-      'http://nccstar.top:9494/rustdesk/nccstar.png', // 示例图片地址
+      'http://nccstar.top:9494/rustdesk/weixin.png', // 示例图片地址
       fit: BoxFit.cover,
       loadingBuilder: (context, child, progress) {
         return progress == null 

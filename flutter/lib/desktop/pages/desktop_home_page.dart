@@ -150,7 +150,7 @@ Widget buildLeftPane(BuildContext context) {
               Expanded(child: Container())
             ],
           ),
-          // 设置按钮（如果是 outgoingOnly 模式）
+/*          // 设置按钮（如果是 outgoingOnly 模式）
           if (isOutgoingOnly)
             Positioned(
               bottom: 6,
@@ -167,18 +167,18 @@ Widget buildLeftPane(BuildContext context) {
                       size: 22,
                     ),
                   ),
-/*                  onTap: () => {
+                  onTap: () => {
                     if (DesktopSettingPage.tabKeys.isNotEmpty)
                       {
                         DesktopSettingPage.switch2page(
                             DesktopSettingPage.tabKeys[0])
                       }
-                  },*/
+                  },
                   onHover: (value) => _editHover.value = value,
                 ),
               ),
             ),
-          // 新增：将 ConnectionPage 固定在底部
+          // 新增：将 ConnectionPage 固定在底部 */
           Positioned(
             bottom: 0,
             left: 0,
