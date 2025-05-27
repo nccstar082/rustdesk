@@ -288,7 +288,6 @@ bool _isCmReadyToShow = false;
 
 showCmWindow({bool isStartup = false}) async {
   if (isStartup) {
-    // 修改此行，添加 skipTaskbar: true
     WindowOptions windowOptions = WindowOptions(
       size: kConnectionManagerWindowSizeClosedChat,
       alwaysOnTop: true,
@@ -321,7 +320,6 @@ showCmWindow({bool isStartup = false}) async {
   }
 hideCmWindow({bool isStartup = false}) async {
   if (isStartup) {
-    // 修改此行，添加 skipTaskbar: true
     WindowOptions windowOptions = WindowOptions(
       size: kConnectionManagerWindowSizeClosedChat,
       skipTaskbar: true, // 隐藏任务栏图标
@@ -409,9 +407,11 @@ WindowOptions getHiddenTitleBarWindowOptions(
   }
   return WindowOptions(
     size: size,
-    center: center,
+    minimumSize: const Size(760, 580), // 最小尺寸
+    maximumSize: const Size(760, 580), // 最大尺寸
+    resizable: false, // 完全禁用窗口调节
     backgroundColor: (isMacOS && isMainWindow) ? null : Colors.transparent,
-    skipTaskbar: false,
+    skipTaskbar: true,
     titleBarStyle: defaultTitleBarStyle,
     alwaysOnTop: alwaysOnTop,
   );
