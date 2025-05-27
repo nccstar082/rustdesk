@@ -150,34 +150,34 @@ Widget buildLeftPane(BuildContext context) {
               Expanded(child: Container())
             ],
           ),
-/*          // 设置按钮（如果是 outgoingOnly 模式）
-          if (isOutgoingOnly)
-            Positioned(
-              bottom: 6,
-              left: 12,
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: InkWell(
-                  child: Obx(
-                    () => Icon(
-                      Icons.settings,
-                      color: _editHover.value
-                          ? textColor
-                          : Colors.grey.withOpacity(0.5),
-                      size: 22,
-                    ),
-                  ),
-                  onTap: () => {
-                    if (DesktopSettingPage.tabKeys.isNotEmpty)
-                      {
-                        DesktopSettingPage.switch2page(
-                            DesktopSettingPage.tabKeys[0])
-                      }
-                  },
-                  onHover: (value) => _editHover.value = value,
-                ),
-              ),
-            ),
+          // 设置按钮（如果是 outgoingOnly 模式）
+//          if (isOutgoingOnly)
+//            Positioned(
+//              bottom: 6,
+//              left: 12,
+//              child: Align(
+//                alignment: Alignment.centerLeft,
+//                child: InkWell(
+//                  child: Obx(
+//                    () => Icon(
+//                      Icons.settings,
+//                      color: _editHover.value
+//                          ? textColor
+//                          : Colors.grey.withOpacity(0.5),
+//                      size: 22,
+//                    ),
+//                  ),
+//                 onTap: () => {
+//                    if (DesktopSettingPage.tabKeys.isNotEmpty)
+//                      {
+//                        DesktopSettingPage.switch2page(
+//                            DesktopSettingPage.tabKeys[0])
+//                      }
+//                  },
+//                  onHover: (value) => _editHover.value = value,
+//                ),
+//              ),
+//            ),
           // 新增：将 ConnectionPage 固定在底部 */
           Positioned(
             bottom: 0,
@@ -268,7 +268,7 @@ Widget buildLeftPane(BuildContext context) {
       ),
     );
   }
-
+/*
   Widget buildPopupMenu(BuildContext context) {
     final textColor = Theme.of(context).textTheme.titleLarge?.color;
     RxBool hover = false.obs;
@@ -293,7 +293,7 @@ Widget buildLeftPane(BuildContext context) {
       onHover: (value) => hover.value = value,
     );
   }
-
+*/
   buildPasswordBoard(BuildContext context) {
     return ChangeNotifierProvider.value(
         value: gFFI.serverModel,
