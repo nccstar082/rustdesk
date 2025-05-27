@@ -319,7 +319,6 @@ showCmWindow({bool isStartup = false}) async {
     }
   }
   }
-
 hideCmWindow({bool isStartup = false}) async {
   if (isStartup) {
     // 修改此行，添加 skipTaskbar: true
