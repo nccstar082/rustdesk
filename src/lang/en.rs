@@ -45,7 +45,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Local Port", "Local port"),
         ("Local Address", "Local address"),
         ("Change Local Port", "Change local port"),
-        ("setup_server_tip", "For faster connection, please set up your own server"),
+        ("setup_server_tip", "API Server"),
         ("Enter Remote ID", "Enter remote ID"),
         ("Auto Login", "Auto Login (Only valid if you set \"Lock after session end\")"),
         ("Change Path", "Change path"),

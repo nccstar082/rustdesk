@@ -38,7 +38,7 @@ late List<String> kBootArgs;
 
 // 定义窗口尺寸常量（文件顶部）
 const double WINDOW_WIDTH = 775;
-const double WINDOW_HEIGHT = 500;
+const double WINDOW_HEIGHT = 495;
 const Size WINDOW_SIZE = Size(WINDOW_WIDTH, WINDOW_HEIGHT);
 
 

@@ -167,13 +167,13 @@ Widget buildLeftPane(BuildContext context) {
                       size: 22,
                     ),
                   ),
-                  onTap: () => {
+/*                  onTap: () => {
                     if (DesktopSettingPage.tabKeys.isNotEmpty)
                       {
                         DesktopSettingPage.switch2page(
                             DesktopSettingPage.tabKeys[0])
                       }
-                  },
+                  },*/
                   onHover: (value) => _editHover.value = value,
                 ),
               ),
@@ -707,6 +707,8 @@ Widget buildLeftPane(BuildContext context) {
   @override
   void initState() {
     super.initState();
+    // 新增：初始化窗口标题
+    _initWindowTitle();
     _updateTimer = periodic_immediate(const Duration(seconds: 1), () async {
       await gFFI.serverModel.fetchID();
       final error = await bind.mainGetError();
@@ -851,6 +853,12 @@ Widget buildLeftPane(BuildContext context) {
       });
     }
     WidgetsBinding.instance.addObserver(this);
+  }
+
+  // 新增：设置窗口标题
+  void _initWindowTitle() async {
+    await windowManager.ensureInitialized();
+    windowManager.setWindowTitle("亿芯电子远程服务"); // 设置你想要的标题
   }
 
   _updateWindowSize() {
