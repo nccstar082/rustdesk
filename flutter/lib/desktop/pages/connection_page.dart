@@ -96,6 +96,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
                         Flexible(
                           child: Text(
                             translate('setup_server_tip'),
+                            textAlign: TextAlign.right, // 文本内容靠右对齐
                             style: TextStyle(
                                 decoration: TextDecoration.underline,
                                 fontSize: em),
