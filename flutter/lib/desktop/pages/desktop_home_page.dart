@@ -236,7 +236,7 @@ Widget buildLeftPane(BuildContext context) {
                                   ?.color
                                   ?.withOpacity(0.5)),
                         ).marginOnly(top: 5),
-                        buildPopupMenu(context)
+//                        buildPopupMenu(context)
                       ],
                     ),
                   ),
@@ -268,7 +268,7 @@ Widget buildLeftPane(BuildContext context) {
       ),
     );
   }
-/*
+
   Widget buildPopupMenu(BuildContext context) {
     final textColor = Theme.of(context).textTheme.titleLarge?.color;
     RxBool hover = false.obs;
@@ -293,7 +293,7 @@ Widget buildLeftPane(BuildContext context) {
       onHover: (value) => hover.value = value,
     );
   }
-*/
+
   buildPasswordBoard(BuildContext context) {
     return ChangeNotifierProvider.value(
         value: gFFI.serverModel,
