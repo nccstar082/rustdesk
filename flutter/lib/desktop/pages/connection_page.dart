@@ -79,34 +79,35 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
               .marginOnly(left: em),
         );
 
-    setupServerWidget() => Flexible(
-          child: Offstage(
-            offstage: !(!_svcStopped.value &&
-                stateGlobal.svcStatus.value == SvcStatus.ready &&
-                _svcIsUsingPublicServer.value),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Text(', ', style: TextStyle(fontSize: em)),
-                Expanded( // 把Flexible替换成Expanded，让组件占满剩余空间
-                  child: InkWell(
-                    onTap: onUsePublicServerGuide,
-                    child: Container(
-                      alignment: Alignment.centerRight, // 利用Container的alignment属性实现右对齐
-                      child: Text(
-                        translate('setup_server_tip'),
-                        style: TextStyle(
-                        decoration: TextDecoration.none,
-                        fontSize: em,
-                      ),
-                    ),
+setupServerWidget() => Flexible(
+  child: Offstage(
+    offstage: !(!_svcStopped.value &&
+        stateGlobal.svcStatus.value == SvcStatus.ready &&
+        _svcIsUsingPublicServer.value),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Text(' ', style: TextStyle(fontSize: em)),
+        Expanded( // 把Flexible替换成Expanded，让组件占满剩余空间
+          child: InkWell(
+//                    onTap: onUsePublicServerGuide,
+            child: Container(
+              alignment: Alignment.centerRight, // 利用Container的alignment属性实现右对齐
+              child: Text(
+                translate('setup_server_tip'),
+                style: TextStyle(
+                  decoration: TextDecoration.none,
+                  fontSize: em,
                 ),
+                textAlign: TextAlign.end, // 添加这一行实现右对齐
               ),
-            )
-          ],
+            ),
+          ),
         ),
-      ),
-    );
+      ],
+    ),
+  ),
+);
 
     basicWidget() => Row(
           crossAxisAlignment: CrossAxisAlignment.center,
