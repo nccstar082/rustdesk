@@ -14,8 +14,7 @@ on:
       - "docs/**"
       - "README.md"
   push:
-#    branches:
-    branches-ignore:
+    branches:
       - master
     paths-ignore:
       - ".github/**"

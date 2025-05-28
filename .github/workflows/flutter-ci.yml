@@ -7,8 +7,7 @@ on:
     - "docs/**"
     - "README.md"
   push:
-#    branches:
-    branches-ignore:  # 排除 master 分支
+    branches:
       - master
     paths-ignore:
       - ".github/**"
