@@ -56,9 +56,10 @@ fn make_tray() -> hbb_common::ResultType<()> {
     let mut event_loop = EventLoopBuilder::new().build();
 
     let tray_menu = Menu::new();
-    let quit_i = MenuItem::new(translate("Stop service".to_owned()), true, None);
+    // 修改：将"Stop service"改为"Hide tray icon"
+    let hide_i = MenuItem::new(translate("Hide tray icon".to_owned()), true, None);
     let open_i = MenuItem::new(translate("Open".to_owned()), true, None);
-    tray_menu.append_items(&[&open_i, &quit_i]).ok();
+    tray_menu.append_items(&[&open_i, &hide_i]).ok();
     let tooltip = |count: usize| {
         if count == 0 {
             format!(
@@ -75,7 +76,7 @@ fn make_tray() -> hbb_common::ResultType<()> {
             )
         }
     };
-    let mut _tray_icon: Arc<Mutex<Option<TrayIcon>>> = Default::default();
+    let mut tray_icon: Arc<Mutex<Option<TrayIcon>>> = Default::default();
 
     let menu_channel = MenuEvent::receiver();
     let tray_channel = TrayEvent::receiver();
@@ -132,7 +133,7 @@ fn make_tray() -> hbb_common::ResultType<()> {
                 .with_icon_as_template(true) // mac only
                 .build();
             match tray {
-                Ok(tray) => _tray_icon = Arc::new(Mutex::new(Some(tray))),
+                Ok(tray) => tray_icon = Arc::new(Mutex::new(Some(tray))),
                 Err(err) => {
                     log::error!("Failed to create tray icon: {}", err);
                 }
@@ -150,16 +151,15 @@ fn make_tray() -> hbb_common::ResultType<()> {
         }
 
         if let Ok(event) = menu_channel.try_recv() {
-            if event.id == quit_i.id() {
-                /* failed in windows, seems no permission to check system process
-                if !crate::check_process("--server", false) {
-                    *control_flow = ControlFlow::Exit;
-                    return;
+            // 修改：处理隐藏托盘图标菜单项点击事件
+            if event.id == hide_i.id() {
+                // 隐藏托盘图标
+                if let Some(mut tray) = tray_icon.lock().unwrap().take() {
+                    drop(tray); // 释放托盘图标资源
+                    log::info!("Tray icon hidden");
                 }
-                */
-                if !crate::platform::uninstall_service(false, false) {
-                    *control_flow = ControlFlow::Exit;
-                }
+                // 可以选择退出事件循环或执行其他清理操作
+                *control_flow = ControlFlow::Exit;
             } else if event.id == open_i.id() {
                 open_func();
             }
@@ -191,7 +191,7 @@ fn make_tray() -> hbb_common::ResultType<()> {
         if let Ok(data) = ipc_receiver.try_recv() {
             match data {
                 Data::ControlledSessionCount(count) => {
-                    _tray_icon
+                    tray_icon
                         .lock()
                         .unwrap()
                         .as_mut()
