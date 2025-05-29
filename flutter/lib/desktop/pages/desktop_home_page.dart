@@ -227,7 +227,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         // 确保NccstarLogo显示在最底层，并可点击
         Positioned.fill(
           child: GestureDetector(
-            mouseCursor: SystemMouseCursors.default, // 保持默认鼠标样式
+            mouseCursor: SystemMouseCursors.basic, // 保持默认鼠标样式
             onTap: () => handleLogoClick(),
             child: Container(
               color: Theme.of(context).scaffoldBackgroundColor,
