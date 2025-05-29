@@ -25,6 +25,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:window_size/window_size.dart' as window_size;
 import '../widgets/button.dart';
 import 'nccstarlogo.dart'; // 导入图片组件
+import 'package:flutter/foundation.dart' show kIsWeb, kIsWindows;
 
 // 定义平台通道
 const MethodChannel _trayChannel = MethodChannel('tray_channel');
@@ -221,13 +222,14 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
-  Widget buildRightPane(BuildContext context) {
-    return Stack(
-      children: [
-        // 确保NccstarLogo显示在最底层，并可点击
-        Positioned.fill(
+Widget buildRightPane(BuildContext context) {
+  return Stack(
+    children: [
+      Positioned.fill(
+        child: MouseRegion(
+          // 仅在 Windows 上使用 MouseRegion
+          cursor: kIsWindows ? SystemMouseCursors.basic : MouseCursor.defer,
           child: GestureDetector(
-            mouseCursor: SystemMouseCursors.basic, // 保持默认鼠标样式
             onTap: () => handleLogoClick(),
             child: Container(
               color: Theme.of(context).scaffoldBackgroundColor,
@@ -235,10 +237,10 @@ class _DesktopHomePageState extends State<DesktopHomePage>
             ),
           ),
         ),
-        // 其他可能的上层组件可以在这里添加
-      ],
-    );
-  }
+      ),
+    ],
+  );
+}
 
   // 处理图片点击
   void handleLogoClick() {
