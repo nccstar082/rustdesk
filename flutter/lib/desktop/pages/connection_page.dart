@@ -20,6 +20,7 @@ import '../../common/widgets/peer_tab_page.dart';
 import '../../common/widgets/autocomplete.dart';
 import '../../models/platform_model.dart';
 import '../../desktop/widgets/material_mod_popup_menu.dart' as mod_menu;
+import 'nccstarlogo.dart'; // 导入图片组件
 
 class OnlineStatusWidget extends StatefulWidget {
   const OnlineStatusWidget({Key? key, this.onSvcStatusChanged})
@@ -79,36 +80,35 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
               .marginOnly(left: em),
         );
 
-    setupServerWidget() => Flexible(
-          child: Offstage(
-            offstage: !(!_svcStopped.value &&
-                stateGlobal.svcStatus.value == SvcStatus.ready &&
-                _svcIsUsingPublicServer.value),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Text(', ', style: TextStyle(fontSize: em)),
-                Flexible(
-                  child: InkWell(
-                    onTap: onUsePublicServerGuide,
-                    child: Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            translate('setup_server_tip'),
-                            style: TextStyle(
-                                decoration: TextDecoration.underline,
-                                fontSize: em),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              ],
-            ),
+ setupServerWidget() => Flexible(
+  child: Offstage(
+    offstage: !(!_svcStopped.value &&
+        stateGlobal.svcStatus.value == SvcStatus.ready &&
+        _svcIsUsingPublicServer.value),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Text(' ', style: TextStyle(fontSize: em)),
+        Expanded( // 把Flexible替换成Expanded，让组件占满剩余空间
+          child: InkWell(
+//                    onTap: onUsePublicServerGuide,
+            child: Container(
+              alignment: Alignment.centerRight, // 利用Container的alignment属性实现右对齐
+              child: Text(
+                translate('setup_server_tip'),
+                style: TextStyle(
+                  decoration: TextDecoration.none,
+                  fontSize: em,
+                ),
+                textAlign: TextAlign.end, // 添加这一行实现右对齐
+              ),
+             ),
           ),
-        );
+        ),
+      ],
+    ),
+  ),
+);
 
     basicWidget() => Row(
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -317,16 +317,40 @@ class _ConnectionPageState extends State<ConnectionPage>
 
 //连接页面构建方法
 
-  @override
-  Widget build(BuildContext context) {
-    final isOutgoingOnly = bind.isOutgoingOnly();
-    return Column(
-      children: [
-        if (!isOutgoingOnly) const Divider(height: 1),
-        if (!isOutgoingOnly) OnlineStatusWidget()
-      ],
-    );
-  }
+
+@override
+Widget build(BuildContext context) {
+  final isOutgoingOnly = bind.isOutgoingOnly();
+  
+  return Stack(
+    children: [
+      // 底层：网络图片内容（使用 Positioned.fill 占据整个 Stack 区域）
+      Positioned.fill(
+        child: _buildNetworkImageContent(),
+      ),
+      
+      // 上层：其他 UI 元素（使用 Column 保持原有布局）
+      Column(
+        children: [
+          Expanded(
+            child: Column(
+              children: [
+                // 保留 Row 结构，但不包含图片组件（已移至 Stack 底层）
+                Row(
+                  children: [
+                    // 其他元素...
+                  ],
+                ),
+              ],
+            ).paddingOnly(left: 0),
+          ),
+          if (!isOutgoingOnly) const Divider(height: 1),
+          if (!isOutgoingOnly) OnlineStatusWidget()
+        ],
+      ),
+    ],
+  );
+}
 
 
 //连接方法和远程 ID 输入 UI
