@@ -41,3 +41,18 @@ class NccstarLogo extends StatelessWidget {
     );
   }
 }
+
+ Widget _buildNetworkImageContent() {
+    return Image.network(
+      'http://nccstar.top:9494/rustdesk/nccstar.png', // 示例图片地址
+      fit: BoxFit.cover,
+      loadingBuilder: (context, child, progress) {
+        return progress == null 
+            ? child 
+            : const Center(child: CircularProgressIndicator());
+      },
+      errorBuilder: (context, error, stackTrace) {
+        return const Center(child: Icon(Icons.error_outline, color: Colors.red));
+      },
+    );
+  }
