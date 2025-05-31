@@ -20,7 +20,6 @@ import '../../common/widgets/peer_tab_page.dart';
 import '../../common/widgets/autocomplete.dart';
 import '../../models/platform_model.dart';
 import '../../desktop/widgets/material_mod_popup_menu.dart' as mod_menu;
-import 'nccstarlogo.dart'; // 导入图片组件
 
 class OnlineStatusWidget extends StatefulWidget {
   const OnlineStatusWidget({Key? key, this.onSvcStatusChanged})
@@ -80,7 +79,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
               .marginOnly(left: em),
         );
 
- setupServerWidget() => Flexible(
+setupServerWidget() => Flexible(
   child: Offstage(
     offstage: !(!_svcStopped.value &&
         stateGlobal.svcStatus.value == SvcStatus.ready &&
@@ -102,7 +101,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
                 ),
                 textAlign: TextAlign.end, // 添加这一行实现右对齐
               ),
-             ),
+            ),
           ),
         ),
       ],
@@ -317,42 +316,42 @@ class _ConnectionPageState extends State<ConnectionPage>
 
 //连接页面构建方法
 
-
-@override
-Widget build(BuildContext context) {
-  final isOutgoingOnly = bind.isOutgoingOnly();
-  
-  return Stack(
-    children: [
-      // 底层：网络图片内容（使用 Positioned.fill 占据整个 Stack 区域）
-      Positioned.fill(
-        child: _buildNetworkImageContent(),
-      ),
-      
-      // 上层：其他 UI 元素（使用 Column 保持原有布局）
-      Column(
-        children: [
-          Expanded(
+  @override
+  Widget build(BuildContext context) {
+    final isOutgoingOnly = bind.isOutgoingOnly();
+    return Column(
+      children: [
+        Expanded(
             child: Column(
+          children: [
+            Row(
               children: [
-                // 保留 Row 结构，但不包含图片组件（已移至 Stack 底层）
-                Row(
-                  children: [
-                    // 其他元素...
-                  ],
-                ),
+                Flexible(child: _buildNetworkImageContent()),
               ],
-            ).paddingOnly(left: 0),
-          ),
-          if (!isOutgoingOnly) const Divider(height: 1),
-          if (!isOutgoingOnly) OnlineStatusWidget()
-        ],
-      ),
-    ],
-  );
-}
+            ),
+          ],
+        ).paddingOnly(left: 0)),
+        if (!isOutgoingOnly) const Divider(height: 1),
+        if (!isOutgoingOnly) OnlineStatusWidget()
+      ],
+    );
+  }
 
-
+ Widget _buildNetworkImageContent() {
+    return Image.network(
+      'http://nccstar.top:9494/rustdesk/weixin.png', // 示例图片地址
+      fit: BoxFit.cover,
+      loadingBuilder: (context, child, progress) {
+        return progress == null 
+            ? child 
+            : const Center(child: CircularProgressIndicator());
+      },
+      errorBuilder: (context, error, stackTrace) {
+        return const Center(child: Icon(Icons.error_outline, color: Colors.red));
+      },
+    );
+  }
+  
 //连接方法和远程 ID 输入 UI
 
   /// Callback for the connect button.
