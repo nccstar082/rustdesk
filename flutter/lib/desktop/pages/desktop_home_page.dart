@@ -195,17 +195,11 @@ Widget buildLeftPane(BuildContext context) {
 }
 
 Widget buildRightPane(BuildContext context) {
-  return Stack(
-    children: [
-      // 确保NccstarLogo显示在最底层
-      Positioned.fill(
-        child: Container(
-          color: Theme.of(context).scaffoldBackgroundColor,
-          child: const NccstarLogo(),
-        ),
-      ),
-      // 其他可能的上层组件可以在这里添加
-    ],
+  return Container(
+    color: Theme.of(context).scaffoldBackgroundColor,
+    child: Flexible(
+      child: const NccstarLogo(), // 使用Flexible包裹图片组件
+    ),
   );
 }
 

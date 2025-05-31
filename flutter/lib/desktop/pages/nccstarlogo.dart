@@ -1,61 +1,103 @@
-// nccstarlogo.dart
 import 'package:flutter/material.dart';
 
-// 保持原有的NccstarLogo类不变（如果还需要使用）
+// 分别设置两个图片的默认宽度
+const double kNccstarLogoWidth = 180.0;    // 星标图片默认宽度
+const double kWeixinImageWidth = 80.0;     // 微信图标默认宽度
+
+/// 星标图片组件（固定宽度，高度自适应，支持const调用）
 class NccstarLogo extends StatelessWidget {
-  const NccstarLogo({Key? key}) : super(key: key);
+  final double width;          // 图片宽度（使用专属常量作为默认值）
+  final BoxFit fit;             // 图片适配方式
+  final String errorText;       // 加载失败文本
+
+  const NccstarLogo({
+    Key? key,
+    this.width = kNccstarLogoWidth, // 使用星标专属常量
+    this.fit = BoxFit.contain,
+    this.errorText = '星标图片加载失败',
+  }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return Image.network(
       'http://nccstar.top:9494/rustdesk/nccstar.png',
-      fit: BoxFit.contain,
-      alignment: Alignment.center,
+      width: width,
+      fit: fit,
       loadingBuilder: (context, child, progress) {
-        if (progress != null) {
-          return const Center(
-            child: Padding(
-              padding: EdgeInsets.all(16.0),
-              child: CircularProgressIndicator(),
-            ),
-          );
-        }
-        return child;
+        return progress == null ? child : _loadingIndicator();
       },
       errorBuilder: (context, error, stackTrace) {
-        return Center(
-          child: Container(
-            padding: EdgeInsets.all(16.0),
-            child: Text(
-              '亿芯电子 远程服务客户端 图片加载失败',
-              style: TextStyle(
-                color: Colors.red,
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-        );
+        return _errorText(errorText);
       },
     );
   }
+
+  /// 加载中指示器（统一样式）
+  Widget _loadingIndicator() => const Center(
+        child: Padding(
+          padding: EdgeInsets.all(8.0),
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+
+  /// 错误文本（统一样式）
+  Widget _errorText(String text) => Center(
+        child: Text(
+          text,
+          style: const TextStyle(
+            color: Colors.red,
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      );
 }
 
-// 新增：与原_buildNetworkImageContent功能完全一致的实现
-Widget buildNccstarLogo() {
-  return Image.network(
-    'http://nccstar.top:9494/rustdesk/weixin.png',
-    fit: BoxFit.cover,
-    loadingBuilder: (context, child, progress) {
-      return progress == null
-          ? child
-          : const Center(child: CircularProgressIndicator());
-    },
-    errorBuilder: (context, error, stackTrace) {
-      return const Center(child: Icon(Icons.error_outline, color: Colors.red));
-    },
-  );
-}
+/// 微信图标组件（结构与星标组件完全一致）
+class WeixinImage extends StatelessWidget {
+  final double width;          // 图片宽度（使用专属常量作为默认值）
+  final BoxFit fit;             // 图片适配方式
+  final String errorText;       // 加载失败文本
 
-// 新增：与buildNccstarLogo功能相同，但使用原函数名（供connection_page.dart使用）
-Widget _buildNetworkImageContent() => buildNccstarLogo();
+  const WeixinImage({
+    Key? key,
+    this.width = kWeixinImageWidth, // 使用微信专属常量
+    this.fit = BoxFit.contain,
+    this.errorText = '微信图标加载失败',
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Image.network(
+      'http://nccstar.top:9494/rustdesk/weixin.png',
+      width: width,
+      fit: fit,
+      loadingBuilder: (context, child, progress) {
+        return progress == null ? child : _loadingIndicator();
+      },
+      errorBuilder: (context, error, stackTrace) {
+        return _errorText(errorText);
+      },
+    );
+  }
+
+  /// 复用加载中指示器（与星标组件共用逻辑）
+  Widget _loadingIndicator() => const Center(
+        child: Padding(
+          padding: EdgeInsets.all(8.0),
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+
+  /// 复用错误文本（与星标组件共用逻辑）
+  Widget _errorText(String text) => Center(
+        child: Text(
+          text,
+          style: const TextStyle(
+            color: Colors.red,
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      );
+}

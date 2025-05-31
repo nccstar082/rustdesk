@@ -20,6 +20,8 @@ import '../../common/widgets/peer_tab_page.dart';
 import '../../common/widgets/autocomplete.dart';
 import '../../models/platform_model.dart';
 import '../../desktop/widgets/material_mod_popup_menu.dart' as mod_menu;
+import 'nccstarlogo.dart'; // 导入图片组件
+
 
 class OnlineStatusWidget extends StatefulWidget {
   const OnlineStatusWidget({Key? key, this.onSvcStatusChanged})
@@ -127,6 +129,7 @@ setupServerWidget() => Flexible(
             ).marginSymmetric(horizontal: em),
             Container(
               width: isIncomingOnly ? 226 : null,
+              alignment: Alignment.centerLeft, // 新增：靠左对齐
               child: _buildConnStatusMsg(),
             ),
             // stop
@@ -316,41 +319,29 @@ class _ConnectionPageState extends State<ConnectionPage>
 
 //连接页面构建方法
 
-  @override
-  Widget build(BuildContext context) {
-    final isOutgoingOnly = bind.isOutgoingOnly();
-    return Column(
-      children: [
-        Expanded(
-            child: Column(
+@override
+Widget build(BuildContext context) {
+  final isOutgoingOnly = bind.isOutgoingOnly();
+  return Column(
+    children: [
+      Expanded(
+        child: Column(
           children: [
             Row(
               children: [
-                Flexible(child: _buildNetworkImageContent()),
+                // 替换为WeixinImage组件（使用默认宽度80.0）
+                Flexible(child: const WeixinImage()),
               ],
             ),
           ],
-        ).paddingOnly(left: 0)),
-        if (!isOutgoingOnly) const Divider(height: 1),
-        if (!isOutgoingOnly) OnlineStatusWidget()
-      ],
-    );
-  }
+        ).paddingOnly(left: 0),
+      ),
+      if (!isOutgoingOnly) const Divider(height: 1),
+      if (!isOutgoingOnly) OnlineStatusWidget()
+    ],
+  );
+}
 
- Widget _buildNetworkImageContent() {
-    return Image.network(
-      'http://nccstar.top:9494/rustdesk/weixin.png', // 示例图片地址
-      fit: BoxFit.cover,
-      loadingBuilder: (context, child, progress) {
-        return progress == null 
-            ? child 
-            : const Center(child: CircularProgressIndicator());
-      },
-      errorBuilder: (context, error, stackTrace) {
-        return const Center(child: Icon(Icons.error_outline, color: Colors.red));
-      },
-    );
-  }
   
 //连接方法和远程 ID 输入 UI
 
