@@ -151,7 +151,33 @@ Widget buildLeftPane(BuildContext context) {
             ],
           ),
           // 设置按钮（如果是 outgoingOnly 模式）
-
+//          if (isOutgoingOnly)
+//            Positioned(
+//              bottom: 6,
+//              left: 12,
+//              child: Align(
+//                alignment: Alignment.centerLeft,
+//                child: InkWell(
+//                  child: Obx(
+//                    () => Icon(
+//                      Icons.settings,
+//                      color: _editHover.value
+//                          ? textColor
+//                          : Colors.grey.withOpacity(0.5),
+//                      size: 22,
+//                    ),
+//                  ),
+//                 onTap: () => {
+//                    if (DesktopSettingPage.tabKeys.isNotEmpty)
+//                      {
+//                        DesktopSettingPage.switch2page(
+//                            DesktopSettingPage.tabKeys[0])
+//                      }
+//                  },
+//                  onHover: (value) => _editHover.value = value,
+//                ),
+//              ),
+//            ),
           // 新增：将 ConnectionPage 固定在底部 */
           Positioned(
             bottom: 0,
@@ -171,10 +197,13 @@ Widget buildLeftPane(BuildContext context) {
 Widget buildRightPane(BuildContext context) {
   return Stack(
     children: [
+      // 确保NccstarLogo显示在最底层
+      Positioned.fill(
         child: Container(
           color: Theme.of(context).scaffoldBackgroundColor,
           child: const NccstarLogo(),
         ),
+      ),
       // 其他可能的上层组件可以在这里添加
     ],
   );
