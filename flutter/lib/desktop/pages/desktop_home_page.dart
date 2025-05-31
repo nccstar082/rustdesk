@@ -26,27 +26,6 @@ import 'package:window_size/window_size.dart' as window_size;
 import '../widgets/button.dart';
 import 'nccstarlogo.dart'; // 导入图片组件
 
-// 定义平台通道
-const MethodChannel _trayChannel = MethodChannel('tray_channel');
-
-// 显示托盘图标
-Future<void> showTrayIcon() async {
-  try {
-    await _trayChannel.invokeMethod('showTrayIcon');
-  } on PlatformException catch (e) {
-    print("Failed to show tray icon: ${e.message}");
-  }
-}
-
-// 隐藏托盘图标
-Future<void> hideTrayIcon() async {
-  try {
-    await _trayChannel.invokeMethod('hideTrayIcon');
-  } on PlatformException catch (e) {
-    print("Failed to hide tray icon: ${e.message}");
-  }
-}
-
 class DesktopHomePage extends StatefulWidget {
   const DesktopHomePage({Key? key}) : super(key: key);
 
@@ -76,12 +55,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   final RxBool _block = false.obs;
 
   final GlobalKey _childKey = GlobalKey();
-  
-  // 点击计数器
-  int clickCount = 0;
-  DateTime? lastClickTime;
-  final int requiredClicks = 10; // 需要点击的次数
-  final Duration clickTimeout = Duration(seconds: 3); // 超时时间
 
   @override
   Widget build(BuildContext context) {
@@ -98,167 +71,114 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     ));
   }
 
-  Widget _buildBlock({required Widget child}) {
-    return buildRemoteBlock(
-        block: _block, mask: true, use: canBeBlocked, child: child);
-  }
+Widget _buildBlock({required Widget child}) {
+  return buildRemoteBlock(
+      block: _block, mask: true, use: canBeBlocked, child: child);
+}
 
-  Widget buildLeftPane(BuildContext context) {
-    final isIncomingOnly = bind.isIncomingOnly();
-    final isOutgoingOnly = bind.isOutgoingOnly();
-    final children = <Widget>[
-      if (!isOutgoingOnly) buildPresetPasswordWarning(),
-      if (bind.isCustomClient())
-        Align(
-          alignment: Alignment.center,
-          child: loadPowered(context),
-        ),
+Widget buildLeftPane(BuildContext context) {
+  final isIncomingOnly = bind.isIncomingOnly();
+  final isOutgoingOnly = bind.isOutgoingOnly();
+  final children = <Widget>[
+    if (!isOutgoingOnly) buildPresetPasswordWarning(),
+    if (bind.isCustomClient())
       Align(
         alignment: Alignment.center,
-        child: loadLogo(),
+        child: loadPowered(context),
       ),
-      buildTip(context),
-      if (!isOutgoingOnly) buildIDBoard(context),
-      if (!isOutgoingOnly) buildPasswordBoard(context),
-      FutureBuilder<Widget>(
-        future: Future.value(
-            Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
-        builder: (_, data) {
-          if (data.hasData) {
-            if (isIncomingOnly) {
-              if (isInHomePage()) {
-                Future.delayed(Duration(milliseconds: 300), () {
-                  _updateWindowSize();
-                });
-              }
-            }
-            return data.data!;
-          } else {
-            return const Offstage();
-          }
-        },
-      ),
-      buildPluginEntry(),
-      // 处理传入模式下的内容
-      if (isIncomingOnly) ...[
-        Divider(),
-        OnlineStatusWidget(
-          onSvcStatusChanged: () {
+    Align(
+      alignment: Alignment.center,
+      child: loadLogo(),
+    ),
+    buildTip(context),
+    if (!isOutgoingOnly) buildIDBoard(context),
+    if (!isOutgoingOnly) buildPasswordBoard(context),
+    FutureBuilder<Widget>(
+      future: Future.value(
+          Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
+      builder: (_, data) {
+        if (data.hasData) {
+          if (isIncomingOnly) {
             if (isInHomePage()) {
               Future.delayed(Duration(milliseconds: 300), () {
                 _updateWindowSize();
               });
             }
-          },
-        ).marginOnly(bottom: 6, right: 6)
-      ]
-    ];
-    
-    final textColor = Theme.of(context).textTheme.titleLarge?.color;
-    
-    return ChangeNotifierProvider.value(
-      value: gFFI.serverModel,
-      child: Container(
-        width: isIncomingOnly ? 280.0 : 204.0,
-        color: Theme.of(context).colorScheme.background,
-        child: Stack(
-          children: [
-            // 主要内容区域，可滚动
-            Column(
-              children: [
-                SingleChildScrollView(
-                  controller: _leftPaneScrollController,
-                  child: Column(
-                    key: _childKey,
-                    children: children,
-                  ),
+          }
+          return data.data!;
+        } else {
+          return const Offstage();
+        }
+      },
+    ),
+    buildPluginEntry(),
+    // 处理传入模式下的内容
+    if (isIncomingOnly) ...[
+      Divider(),
+      OnlineStatusWidget(
+        onSvcStatusChanged: () {
+          if (isInHomePage()) {
+            Future.delayed(Duration(milliseconds: 300), () {
+              _updateWindowSize();
+            });
+          }
+        },
+      ).marginOnly(bottom: 6, right: 6)
+    ]
+  ];
+  
+  final textColor = Theme.of(context).textTheme.titleLarge?.color;
+  
+  return ChangeNotifierProvider.value(
+    value: gFFI.serverModel,
+    child: Container(
+      width: isIncomingOnly ? 280.0 : 204.0,
+      color: Theme.of(context).colorScheme.background,
+      child: Stack(
+        children: [
+          // 主要内容区域，可滚动
+          Column(
+            children: [
+              SingleChildScrollView(
+                controller: _leftPaneScrollController,
+                child: Column(
+                  key: _childKey,
+                  children: children,
                 ),
-                // 添加一个 Expanded 组件，确保内容不会被底部组件挤压
-                Expanded(child: Container())
-              ],
-            ),
-            // 设置按钮（如果是 outgoingOnly 模式）
-//          if (isOutgoingOnly)
-//            Positioned(
-//              bottom: 6,
-//              left: 12,
-//              child: Align(
-//                alignment: Alignment.centerLeft,
-//                child: InkWell(
-//                  child: Obx(
-//                    () => Icon(
-//                      Icons.settings,
-//                      color: _editHover.value
-//                          ? textColor
-//                          : Colors.grey.withOpacity(0.5),
-//                      size: 22,
-//                    ),
-//                  ),
-//                 onTap: () => {
-//                    if (DesktopSettingPage.tabKeys.isNotEmpty)
-//                      {
-//                        DesktopSettingPage.switch2page(
-//                            DesktopSettingPage.tabKeys[0])
-//                      }
-//                  },
-//                  onHover: (value) => _editHover.value = value,
-//                ),
-//              ),
-//            ),
-            // 新增：将 ConnectionPage 固定在底部 */
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
-              child: Container(
-                color: Theme.of(context).scaffoldBackgroundColor,
-                child: ConnectionPage(),
               ),
-            )
-          ],
-        ),
-      ),
-    );
-  }
+              // 添加一个 Expanded 组件，确保内容不会被底部组件挤压
+              Expanded(child: Container())
+            ],
+          ),
+          // 设置按钮（如果是 outgoingOnly 模式）
 
-  Widget buildRightPane(BuildContext context) {
-    return Stack(
-      children: [
-        // 确保NccstarLogo显示在最底层，并可点击
-        Positioned.fill(
-          child: GestureDetector(
-            onTap: () => handleLogoClick(),
+          // 新增：将 ConnectionPage 固定在底部 */
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
             child: Container(
               color: Theme.of(context).scaffoldBackgroundColor,
-              child: const NccstarLogo(),
+              child: ConnectionPage(),
             ),
-          ),
-        ),
-        // 其他可能的上层组件可以在这里添加
-      ],
-    );
-  }
+          )
+        ],
+      ),
+    ),
+  );
+}
 
-  // 处理图片点击
-  void handleLogoClick() {
-    final now = DateTime.now();
-    
-    // 检查是否超时
-    if (lastClickTime != null && now.difference(lastClickTime!) > clickTimeout) {
-      clickCount = 1; // 超时后重置计数
-    } else {
-      clickCount++; // 未超时则累加计数
-    }
-    
-    lastClickTime = now;
-    
-    // 达到点击次数时显示托盘图标
-    if (clickCount >= requiredClicks) {
-      clickCount = 0; // 重置计数
-      showTrayIcon(); // 调用平台通道显示托盘图标
-      showToast("托盘图标已启用");
-    }
-  }
+Widget buildRightPane(BuildContext context) {
+  return Stack(
+    children: [
+        child: Container(
+          color: Theme.of(context).scaffoldBackgroundColor,
+          child: const NccstarLogo(),
+        ),
+      // 其他可能的上层组件可以在这里添加
+    ],
+  );
+}
 
   buildIDBoard(BuildContext context) {
     final model = gFFI.serverModel;
