@@ -322,22 +322,21 @@ class _ConnectionPageState extends State<ConnectionPage>
 @override
 Widget build(BuildContext context) {
   final isOutgoingOnly = bind.isOutgoingOnly();
+  
   return Column(
     children: [
       Expanded(
-        child: Column(
-          children: [
-            Row(
-              children: [
-                // 替换为WeixinImage组件（使用默认宽度80.0）
-                Flexible(child: const WeixinImage()),
-              ],
-            ),
-          ],
-        ).paddingOnly(left: 0),
+        child: Container(
+          padding: const EdgeInsets.only(left: 0),
+          // 可直接放置其他内容（如果有）
+        ),
       ),
-      if (!isOutgoingOnly) const Divider(height: 1),
-      if (!isOutgoingOnly) OnlineStatusWidget()
+      
+      // 使用三元表达式合并条件组件
+      if (!isOutgoingOnly) ...[
+        const Divider(height: 1),
+        const OnlineStatusWidget(),
+      ],
     ],
   );
 }
