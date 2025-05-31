@@ -93,54 +93,47 @@ Widget buildLeftPane(BuildContext context) {
     buildTip(context),
     if (!isOutgoingOnly) buildIDBoard(context),
     if (!isOutgoingOnly) buildPasswordBoard(context),
-      
-      // 帮助卡片（保持原有逻辑）
-      FutureBuilder<Widget>(
-      future: Future.value(
-          Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
-      builder: (_, data) {
-          if (data.hasData && data.data != null) {
-            if (isIncomingOnly && isInHomePage()) {
-              Future.delayed(Duration(milliseconds: 300), _updateWindowSize);
-            }
-            return data.data!;
-          } else {
-            return const Offstage(); // 无卡片时隐藏
-          }
-        },
-      ),
-      
-      // 新增：无帮助卡片时显示WeixinImage
-      FutureBuilder<Widget>(
-        future: Future.value(Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
-        builder: (_, data) {
-          if ((data.data == null || data.data is Offstage) && !isCardClosed) {
-            return Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: const WeixinImage(), // 使用默认宽度（80.0）
-            );
-          } else {
-            return const SizedBox.shrink(); // 有卡片时隐藏
-          }
-        },
+      // 新增Stack层叠布局
+      Stack(
+        children: [
+          // 底层：始终显示的微信图片
+          Padding(
+            padding: const EdgeInsets.all(0.0),
+            child: const WeixinImage(), // 使用默认宽度80.0
+          ),
+          
+          // 上层：帮助卡片（有数据时自动覆盖）
+          FutureBuilder<Widget>(
+            future: Future.value(Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
+            builder: (_, data) {
+              if (data.hasData && data.data != null) {
+                return data.data!;
+              } else {
+                return const SizedBox.shrink();
+              }
+            },
+          ),
+        ],
       ),
       
       buildPluginEntry(),
-      // 传入模式内容
+      // 处理传入模式下的内容
       if (isIncomingOnly) ...[
         Divider(),
         OnlineStatusWidget(
           onSvcStatusChanged: () {
             if (isInHomePage()) {
-              Future.delayed(Duration(milliseconds: 300), _updateWindowSize);
+              Future.delayed(Duration(milliseconds: 300), () {
+                _updateWindowSize();
+              });
             }
           },
         ).marginOnly(bottom: 6, right: 6)
       ]
     ];
-
+    
     final textColor = Theme.of(context).textTheme.titleLarge?.color;
-
+    
     return ChangeNotifierProvider.value(
       value: gFFI.serverModel,
       child: Container(
@@ -148,6 +141,7 @@ Widget buildLeftPane(BuildContext context) {
         color: Theme.of(context).colorScheme.background,
         child: Stack(
           children: [
+            // 主要内容区域，可滚动
             Column(
               children: [
                 SingleChildScrollView(
@@ -157,7 +151,8 @@ Widget buildLeftPane(BuildContext context) {
                     children: children,
                   ),
                 ),
-                Expanded(child: Container()),
+                // 添加一个 Expanded 组件，确保内容不会被底部组件挤压
+                Expanded(child: Container())
               ],
             ),
           // 设置按钮（如果是 outgoingOnly 模式）
@@ -189,20 +184,20 @@ Widget buildLeftPane(BuildContext context) {
 //              ),
 //            ),
           // 新增：将 ConnectionPage 固定在底部 */
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
-              child: Container(
-                color: Theme.of(context).scaffoldBackgroundColor,
-                child: ConnectionPage(),
-              ),
-            )
-          ],
-        ),
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              color: Theme.of(context).scaffoldBackgroundColor,
+              child: ConnectionPage(),
+            ),
+          )
+        ],
       ),
-    );
-  }
+    ),
+  );
+}
 
 Widget buildRightPane(BuildContext context) {
   return Container(
@@ -213,7 +208,6 @@ Widget buildRightPane(BuildContext context) {
   );
 }
 
-  // 其余方法保持不变...
   buildIDBoard(BuildContext context) {
     final model = gFFI.serverModel;
     return Container(
