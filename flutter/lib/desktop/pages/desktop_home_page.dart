@@ -94,27 +94,32 @@ Widget buildLeftPane(BuildContext context) {
     if (!isOutgoingOnly) buildIDBoard(context),
     if (!isOutgoingOnly) buildPasswordBoard(context),
       // 新增Stack层叠布局
-      Stack(
-        children: [
-          // 底层：始终显示的微信图片
-          Padding(
-            padding: const EdgeInsets.all(0.0),
-            child: const WeixinImage(), // 使用默认宽度80.0
-          ),
-          
-          // 上层：帮助卡片（有数据时自动覆盖）
-          FutureBuilder<Widget>(
-            future: Future.value(Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
-            builder: (_, data) {
-              if (data.hasData && data.data != null) {
-                return data.data!;
-              } else {
-                return const SizedBox.shrink();
-              }
-            },
-          ),
-        ],
-      ),
+    // 使用LayoutBuilder获取父容器宽度
+    LayoutBuilder(
+      builder: (context, constraints) {
+        return Stack(
+          children: [
+            // 底层：自适应宽度的微信图片
+            WeixinImage(
+              width: constraints.maxWidth, // 宽度等于父容器宽度
+              fit: BoxFit.contain, // 保持比例，不溢出
+            ),
+            
+            // 上层：帮助卡片（有数据时自动覆盖）
+            FutureBuilder<Widget>(
+              future: Future.value(Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
+              builder: (_, data) {
+                if (data.hasData && data.data != null) {
+                  return data.data!;
+                } else {
+                  return const SizedBox.shrink();
+                }
+              },
+            ),
+          ],
+        );
+      },
+    ),
       
       buildPluginEntry(),
       // 处理传入模式下的内容
