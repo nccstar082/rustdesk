@@ -28,8 +28,9 @@ pub fn hide_tray() -> hbb_common::ResultType<()> {
         if let Some(tray) = TRAY_ICON.as_mut() {
             // 移除托盘图标
             let mut tray = tray.lock().unwrap();
-            tray.set_menu(None)?;
-            tray.set_tooltip(None)?;
+            // 忽略错误，因为这些方法返回()
+            allow_err!(tray.set_menu(None));
+            allow_err!(tray.set_tooltip(None));
             // 某些平台可能需要特殊处理才能完全隐藏图标
         }
         TRAY_ICON = None;
