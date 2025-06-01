@@ -8,20 +8,33 @@ use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use std::time::Duration;
 
+// 使用全局变量跟踪托盘图标实例
+static mut TRAY_ICON: Option<Arc<Mutex<tray_icon::TrayIcon>>> = None;
+
+// 禁用自动启动托盘图标
 pub fn start_tray() {
-    if crate::ui_interface::get_builtin_option(hbb_common::config::keys::OPTION_HIDE_TRAY) == "Y" {
-        #[cfg(target_os = "macos")]
-        {
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            }
+    // 直接返回，不创建托盘图标
+    return;
+}
+
+// 显示托盘图标
+pub fn show_tray() -> hbb_common::ResultType<()> {
+    make_tray()
+}
+
+// 隐藏托盘图标
+pub fn hide_tray() -> hbb_common::ResultType<()> {
+    unsafe {
+        if let Some(tray) = TRAY_ICON.as_mut() {
+            // 移除托盘图标
+            let mut tray = tray.lock().unwrap();
+            tray.set_menu(None)?;
+            tray.set_tooltip(None)?;
+            // 某些平台可能需要特殊处理才能完全隐藏图标
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            return;
-        }
+        TRAY_ICON = None;
+        Ok(())
     }
-    allow_err!(make_tray());
 }
 
 fn make_tray() -> hbb_common::ResultType<()> {
@@ -75,7 +88,6 @@ fn make_tray() -> hbb_common::ResultType<()> {
             )
         }
     };
-    let mut _tray_icon: Arc<Mutex<Option<TrayIcon>>> = Default::default();
 
     let menu_channel = MenuEvent::receiver();
     let tray_channel = TrayEvent::receiver();
@@ -91,15 +103,10 @@ fn make_tray() -> hbb_common::ResultType<()> {
         crate::platform::macos::handle_application_should_open_untitled_file();
         #[cfg(target_os = "windows")]
         {
-            // Do not use "start uni link" way, it may not work on some Windows, and pop out error
-            // dialog, I found on one user's desktop, but no idea why, Windows is shit.
-            // Use `run_me` instead.
-            // `allow_multiple_instances` in `flutter/windows/runner/main.cpp` allows only one instance without args.
             crate::run_me::<&str>(vec![]).ok();
         }
         #[cfg(target_os = "linux")]
         {
-            // Do not use "xdg-open", it won't read config
             if crate::dbus::invoke_new_connection(crate::get_uri_prefix()).is_err() {
                 crate::run_me::<&str>(vec![]).ok();
             }
@@ -117,33 +124,28 @@ fn make_tray() -> hbb_common::ResultType<()> {
         use tao::platform::macos::EventLoopExtMacOS;
         event_loop.set_activation_policy(tao::platform::macos::ActivationPolicy::Accessory);
     }
+    
+    // 保存托盘图标实例
+    let tray = TrayIconBuilder::new()
+        .with_menu(Box::new(tray_menu.clone()))
+        .with_tooltip(tooltip(0))
+        .with_icon(icon.clone())
+        .with_icon_as_template(true)
+        .build()?;
+    
+    unsafe {
+        TRAY_ICON = Some(Arc::new(Mutex::new(tray)));
+    }
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::WaitUntil(
             std::time::Instant::now() + std::time::Duration::from_millis(100),
         );
 
         if let tao::event::Event::NewEvents(tao::event::StartCause::Init) = event {
-            // We create the icon once the event loop is actually running
-            // to prevent issues like https://github.com/tauri-apps/tray-icon/issues/90
-            let tray = TrayIconBuilder::new()
-                .with_menu(Box::new(tray_menu.clone()))
-                .with_tooltip(tooltip(0))
-                .with_icon(icon.clone())
-                .with_icon_as_template(true) // mac only
-                .build();
-            match tray {
-                Ok(tray) => _tray_icon = Arc::new(Mutex::new(Some(tray))),
-                Err(err) => {
-                    log::error!("Failed to create tray icon: {}", err);
-                }
-            };
-
-            // We have to request a redraw here to have the icon actually show up.
-            // Tao only exposes a redraw method on the Window so we use core-foundation directly.
             #[cfg(target_os = "macos")]
             unsafe {
                 use core_foundation::runloop::{CFRunLoopGetMain, CFRunLoopWakeUp};
-
                 let rl = CFRunLoopGetMain();
                 CFRunLoopWakeUp(rl);
             }
@@ -151,12 +153,6 @@ fn make_tray() -> hbb_common::ResultType<()> {
 
         if let Ok(event) = menu_channel.try_recv() {
             if event.id == quit_i.id() {
-                /* failed in windows, seems no permission to check system process
-                if !crate::check_process("--server", false) {
-                    *control_flow = ControlFlow::Exit;
-                    return;
-                }
-                */
                 if !crate::platform::uninstall_service(false, false) {
                     *control_flow = ControlFlow::Exit;
                 }
@@ -191,11 +187,13 @@ fn make_tray() -> hbb_common::ResultType<()> {
         if let Ok(data) = ipc_receiver.try_recv() {
             match data {
                 Data::ControlledSessionCount(count) => {
-                    _tray_icon
-                        .lock()
-                        .unwrap()
-                        .as_mut()
-                        .map(|t| t.set_tooltip(Some(tooltip(count))));
+                    unsafe {
+                        if let Some(tray) = TRAY_ICON.as_mut() {
+                            tray.lock()
+                                .unwrap()
+                                .set_tooltip(Some(tooltip(count)));
+                        }
+                    }
                 }
                 _ => {}
             }
