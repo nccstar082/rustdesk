@@ -95,6 +95,7 @@ setupServerWidget() => Flexible(
 //                    onTap: onUsePublicServerGuide,
             child: Container(
               alignment: Alignment.centerRight, // 利用Container的alignment属性实现右对齐
+              padding: EdgeInsets.only(right: 5), // 新增右侧内边距（5像素）
               child: Text(
                 translate('setup_server_tip'),
                 style: TextStyle(
@@ -126,7 +127,8 @@ setupServerWidget() => Flexible(
                         ? Color.fromARGB(255, 50, 190, 166)
                         : Color.fromARGB(255, 224, 79, 95)),
               ),
-            ).marginSymmetric(horizontal: em),
+//            ).marginSymmetric(horizontal: em),
+            ).marginSymmetric(horizontal: 5),
             Container(
               width: isIncomingOnly ? 226 : null,
               alignment: Alignment.centerLeft, // 新增：靠左对齐
