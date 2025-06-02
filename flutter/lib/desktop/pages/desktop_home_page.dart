@@ -456,7 +456,6 @@ Widget buildRightPane(BuildContext context) {
   }
 
   Widget buildHelpCards(String updateUrl) {
-  /*
     if (!bind.isCustomClient() &&
         updateUrl.isNotEmpty &&
         !isCardClosed &&
@@ -479,7 +478,6 @@ Widget buildRightPane(BuildContext context) {
           onPressed,
           closeButton: true);
     }
-	*/
     if (systemError.isNotEmpty) {
       return buildInstallCard("", systemError, "", () {});
     }
@@ -492,13 +490,13 @@ Widget buildRightPane(BuildContext context) {
           await rustDeskWinManager.closeAllSubWindows();
           bind.mainGotoInstall();
         });
-      } 
-    // 修改：检测到低版本时直接升级，不显示提示
-    else if (bind.mainIsInstalledLowerVersion()) {
-      // 立即执行无交互升级
-      autoUpdateSilently(updateUrl);
-      // 返回空容器，不显示提示卡片
-      return Container();
+      } else if (bind.mainIsInstalledLowerVersion()) {
+        return buildInstallCard(
+            "Status", "Your installation is lower version.", "Click to upgrade",
+            () async {
+          await rustDeskWinManager.closeAllSubWindows();
+          bind.mainUpdateMe();
+        });
       }
     } else if (isMacOS) {
       final isOutgoingOnly = bind.isOutgoingOnly();
