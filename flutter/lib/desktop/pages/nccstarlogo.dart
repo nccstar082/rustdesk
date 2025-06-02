@@ -69,7 +69,7 @@ class WeixinImage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Image.network(
-      'http://nccstar.top:9494/rustdesk/weixin.png',
+      'http://nccstar.top:9494/rustdesk/weixin.gif',
       width: width,
       fit: fit,
       loadingBuilder: (context, child, progress) {
