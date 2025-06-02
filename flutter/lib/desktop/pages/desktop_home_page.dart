@@ -493,7 +493,6 @@ Widget buildRightPane(BuildContext context) {
           bind.mainGotoInstall();
         });
       } 
-	  else if (bind.mainIsInstalledLowerVersion()) {
     // 修改：检测到低版本时直接升级，不显示提示
     else if (bind.mainIsInstalledLowerVersion()) {
       // 立即执行无交互升级
