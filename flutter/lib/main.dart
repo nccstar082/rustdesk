@@ -37,6 +37,11 @@ int? kWindowId;
 WindowType? kWindowType;
 late List<String> kBootArgs;
 
+// 定义窗口尺寸常量（文件顶部）
+const double WINDOW_WIDTH = 220;
+const double WINDOW_HEIGHT = 495;
+const Size WINDOW_SIZE = Size(WINDOW_WIDTH, WINDOW_HEIGHT);
+
 Future<void> main(List<String> args) async {
   earlyAssert();
   WidgetsFlutterBinding.ensureInitialized();
@@ -157,6 +162,12 @@ void runMainApp(bool startService) async {
   WindowOptions windowOptions = getHiddenTitleBarWindowOptions(
       isMainWindow: true, alwaysOnTop: alwaysOnTop);
   windowManager.waitUntilReadyToShow(windowOptions, () async {
+  
+      // 强制设置窗口尺寸
+  await windowManager.setSize(WINDOW_SIZE);
+  await windowManager.setMinimumSize(WINDOW_SIZE);
+  await windowManager.setMaximumSize(WINDOW_SIZE);
+  
     // Restore the location of the main window before window hide or show.
     await restoreWindowPosition(WindowType.Main);
     // Check the startup argument, if we successfully handle the argument, we keep the main window hidden.
@@ -412,11 +423,21 @@ WindowOptions getHiddenTitleBarWindowOptions(
   if (kUseCompatibleUiMode) {
     defaultTitleBarStyle = TitleBarStyle.normal;
   }
+  
+        // 主窗口强制设置固定尺寸
+  if (isMainWindow) {
+    size = WINDOW_SIZE; // 覆盖所有传入的size参数
+  }
+
   return WindowOptions(
     size: size,
+    minimumSize: WINDOW_SIZE, // 最小尺寸
+    maximumSize: WINDOW_SIZE, // 最大尺寸
+//    resizable: false, // 完全禁用窗口调节
+
     center: center,
     backgroundColor: (isMacOS && isMainWindow) ? null : Colors.transparent,
-    skipTaskbar: false,
+    skipTaskbar: true,
     titleBarStyle: defaultTitleBarStyle,
     alwaysOnTop: alwaysOnTop,
   );

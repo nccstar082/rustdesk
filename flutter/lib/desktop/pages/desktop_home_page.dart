@@ -25,6 +25,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:window_size/window_size.dart' as window_size;
 import '../widgets/button.dart';
+import 'nccstarlogo.dart'; // 导入图片组件
 
 class DesktopHomePage extends StatefulWidget {
   const DesktopHomePage({Key? key}) : super(key: key);
@@ -76,65 +77,77 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         block: _block, mask: true, use: canBeBlocked, child: child);
   }
 
-  Widget buildLeftPane(BuildContext context) {
-    final isIncomingOnly = bind.isIncomingOnly();
-    final isOutgoingOnly = bind.isOutgoingOnly();
-    final children = <Widget>[
-      if (!isOutgoingOnly) buildPresetPasswordWarning(),
-      if (bind.isCustomClient())
-        Align(
-          alignment: Alignment.center,
-          child: loadPowered(context),
-        ),
+Widget buildLeftPane(BuildContext context) {
+  final isIncomingOnly = bind.isIncomingOnly();
+  final isOutgoingOnly = bind.isOutgoingOnly();
+  final children = <Widget>[
+    if (!isOutgoingOnly) buildPresetPasswordWarning(),
+    if (bind.isCustomClient())
       Align(
         alignment: Alignment.center,
-        child: loadLogo(),
+        child: loadPowered(context),
       ),
-      buildTip(context),
-      if (!isOutgoingOnly) buildIDBoard(context),
-      if (!isOutgoingOnly) buildPasswordBoard(context),
-      FutureBuilder<Widget>(
-        future: Future.value(
-            Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
-        builder: (_, data) {
-          if (data.hasData) {
-            if (isIncomingOnly) {
-              if (isInHomePage()) {
-                Future.delayed(Duration(milliseconds: 300), () {
-                  _updateWindowSize();
-                });
-              }
-            }
-            return data.data!;
-          } else {
-            return const Offstage();
+    Align(
+      alignment: Alignment.center,
+      child: loadLogo(),
+    ),
+    buildTip(context),
+    if (!isOutgoingOnly) buildIDBoard(context),
+    if (!isOutgoingOnly) buildPasswordBoard(context),
+      // 新增Stack层叠布局
+    // 使用LayoutBuilder获取父容器宽度
+    LayoutBuilder(
+      builder: (context, constraints) {
+        return Stack(
+          children: [
+            // 底层：自适应宽度的微信图片
+            WeixinImage(
+              width: constraints.maxWidth, // 宽度等于父容器宽度
+              fit: BoxFit.contain, // 保持比例，不溢出
+            ),
+            
+            // 上层：帮助卡片（有数据时自动覆盖）
+FutureBuilder<Widget>(
+  future: Future.value(
+    Obx(() => buildHelpCards(stateGlobal.updateUrl.value))  // 修正：减少一个多余的右括号
+  ),
+  builder: (_, data) {
+    if (data.hasData && data.data != null) {
+      return data.data!;
+    } else {
+      return const SizedBox.shrink();
+    }
+  },
+),
+          ],
+        );
+      },
+    ),
+      
+      buildPluginEntry(),
+      // 处理传入模式下的内容
+    if (isIncomingOnly) ...[  // 关键修复：用...展开列表
+      Divider(),
+      OnlineStatusWidget(
+        onSvcStatusChanged: () {
+          if (isInHomePage()) {
+            Future.delayed(Duration(milliseconds: 300), () {
+              _updateWindowSize();
+            });
           }
         },
-      ),
-      buildPluginEntry(),
-    ];
-    if (isIncomingOnly) {
-      children.addAll([
-        Divider(),
-        OnlineStatusWidget(
-          onSvcStatusChanged: () {
-            if (isInHomePage()) {
-              Future.delayed(Duration(milliseconds: 300), () {
-                _updateWindowSize();
-              });
-            }
-          },
-        ).marginOnly(bottom: 6, right: 6)
-      ]);
-    }
+      ).marginOnly(bottom: 6, right: 6)
+    ],  // 注意这里的逗号分隔
+  ];
     final textColor = Theme.of(context).textTheme.titleLarge?.color;
     return ChangeNotifierProvider.value(
       value: gFFI.serverModel,
       child: Container(
-        width: isIncomingOnly ? 280.0 : 200.0,
+        width: isIncomingOnly ? 280.0 : 204.0,
         color: Theme.of(context).colorScheme.background,
         child: Stack(
           children: [
+            // 主要内容区域，可滚动
             Column(
               children: [
                 SingleChildScrollView(
@@ -144,48 +157,35 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                     children: children,
                   ),
                 ),
+                // 添加一个 Expanded 组件，确保内容不会被底部组件挤压
                 Expanded(child: Container())
               ],
             ),
-            if (isOutgoingOnly)
-              Positioned(
-                bottom: 6,
-                left: 12,
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: InkWell(
-                    child: Obx(
-                      () => Icon(
-                        Icons.settings,
-                        color: _editHover.value
-                            ? textColor
-                            : Colors.grey.withOpacity(0.5),
-                        size: 22,
-                      ),
-                    ),
-                    onTap: () => {
-                      if (DesktopSettingPage.tabKeys.isNotEmpty)
-                        {
-                          DesktopSettingPage.switch2page(
-                              DesktopSettingPage.tabKeys[0])
-                        }
-                    },
-                    onHover: (value) => _editHover.value = value,
-                  ),
-                ),
-              )
-          ],
-        ),
-      ),
-    );
-  }
 
-  buildRightPane(BuildContext context) {
-    return Container(
-      color: Theme.of(context).scaffoldBackgroundColor,
-      child: ConnectionPage(),
-    );
-  }
+          // 新增：将 ConnectionPage 固定在底部 */
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              color: Theme.of(context).scaffoldBackgroundColor,
+              child: ConnectionPage(),
+            ),
+          )
+        ],
+      ),
+    ),
+  );
+}
+
+Widget buildRightPane(BuildContext context) {
+  return Container(
+    color: Theme.of(context).scaffoldBackgroundColor,
+    child: Flexible(
+      child: const NccstarLogo(), // 使用Flexible包裹图片组件
+    ),
+  );
+}
 
   buildIDBoard(BuildContext context) {
     final model = gFFI.serverModel;
@@ -222,7 +222,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                                   ?.color
                                   ?.withOpacity(0.5)),
                         ).marginOnly(top: 5),
-                        buildPopupMenu(context)
+//                        buildPopupMenu(context)  //屏蔽页面内容
                       ],
                     ),
                   ),
@@ -297,7 +297,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     final showOneTime = model.approveMode != 'click' &&
         model.verificationMethod != kUsePermanentPassword;
     return Container(
-      margin: EdgeInsets.only(left: 20.0, right: 16, top: 13, bottom: 13),
+      margin: EdgeInsets.only(left: 20.0, right: 16, top: 13, bottom: 6),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.baseline,
         textBaseline: TextBaseline.alphabetic,
