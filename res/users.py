@@ -49,10 +49,9 @@ def view(
 
     users = []
 
-    current = 0
+    current = 1
 
     while True:
-        current += 1
         params["current"] = current
         response = requests.get(f"{url}/api/users", headers=headers, params=params)
         if response.status_code != 200:
@@ -68,7 +67,8 @@ def view(
         users.extend(data)
 
         total = response_json.get("total", 0)
-        if len(data) < pageSize or current * pageSize >= total:
+        current += pageSize
+        if len(data) < pageSize or current > total:
             break
 
     return users

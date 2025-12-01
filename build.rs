@@ -18,7 +18,7 @@ fn build_mac() {
             b.flag("-DNO_InputMonitoringAuthStatus=1");
         }
     }
-    b.flag("-std=c++17").file(file).compile("macos");
+    b.file(file).compile("macos");
     println!("cargo:rerun-if-changed={}", file);
 }
 

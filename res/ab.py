@@ -34,10 +34,9 @@ def view_shared_abs(url, token, name=None):
     filtered_params["pageSize"] = pageSize
 
     abs = []
-    current = 0
+    current = 1
 
     while True:
-        current += 1
         filtered_params["current"] = current
         response = requests.get(f"{url}/api/ab/shared/profiles", headers=headers, params=filtered_params)
         if response.status_code != 200:
@@ -53,7 +52,8 @@ def view_shared_abs(url, token, name=None):
         abs.extend(data)
 
         total = response_json.get("total", 0)
-        if len(data) < pageSize or current * pageSize >= total:
+        current += pageSize
+        if len(data) < pageSize or current > total:
             break
 
     return abs
@@ -86,10 +86,9 @@ def view_ab_peers(url, token, ab_guid, peer_id=None, alias=None):
     filtered_params["pageSize"] = pageSize
 
     peers = []
-    current = 0
+    current = 1
 
     while True:
-        current += 1
         filtered_params["current"] = current
         response = requests.get(f"{url}/api/ab/peers", headers=headers, params=filtered_params)
         if response.status_code != 200:
@@ -105,7 +104,8 @@ def view_ab_peers(url, token, ab_guid, peer_id=None, alias=None):
         peers.extend(data)
 
         total = response_json.get("total", 0)
-        if len(data) < pageSize or current * pageSize >= total:
+        current += pageSize
+        if len(data) < pageSize or current > total:
             break
 
     return peers
@@ -403,10 +403,9 @@ def view_ab_rules(url, token, ab_guid):
     }
 
     rules = []
-    current = 0
+    current = 1
 
     while True:
-        current += 1
         params["current"] = current
         response = requests.get(f"{url}/api/ab/rules", headers=headers, params=params)
         if response.status_code != 200:
@@ -422,7 +421,8 @@ def view_ab_rules(url, token, ab_guid):
         rules.extend(data)
 
         total = response_json.get("total", 0)
-        if len(data) < pageSize or current * pageSize >= total:
+        current += pageSize
+        if len(data) < pageSize or current > total:
             break
 
     # Convert numeric permissions to string format

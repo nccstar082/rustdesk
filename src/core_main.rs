@@ -181,11 +181,6 @@ pub fn core_main() -> Option<Vec<String>> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     init_plugins(&args);
     if args.is_empty() || crate::common::is_empty_uni_link(&args[0]) {
-        #[cfg(target_os = "macos")]
-        {
-            crate::platform::macos::try_remove_temp_update_dir(None);
-        }
-
         #[cfg(windows)]
         hbb_common::config::PeerConfig::preload_peers();
         std::thread::spawn(move || crate::start_server(false, no_server));

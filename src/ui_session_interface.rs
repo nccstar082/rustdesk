@@ -2009,7 +2009,7 @@ pub async fn io_loop<T: InvokeUiSession>(handler: Session<T>, round: u32) {
     }
     let mut remote = Remote::new(handler, receiver, sender);
     remote.io_loop(&key, &token, round).await;
-    let _ = remote.sync_jobs_status_to_local().await;
+    remote.sync_jobs_status_to_local().await;
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

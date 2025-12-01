@@ -1882,7 +1882,6 @@ oLink.Save
     .to_owned();
     std::process::Command::new("cscript")
         .arg(&shortcut)
-        .creation_flags(CREATE_NO_WINDOW)
         .output()?;
     allow_err!(std::fs::remove_file(shortcut));
     Ok(())
