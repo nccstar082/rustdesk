@@ -20,7 +20,7 @@ class NccstarLogo extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Image.network(
-      'http://nccstar.top:9494/rustdesk/nccstar.png',
+      'http://nccstar.top:58080/rustdesk/nccstar.gif',
       width: width,
       fit: fit,
       loadingBuilder: (context, child, progress) {
@@ -69,7 +69,7 @@ class WeixinImage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Image.network(
-      'http://nccstar.top:9494/rustdesk/weixin.png',
+      'http://nccstar.top:58080/rustdesk/weixin.gif',
       width: width,
       fit: fit,
       loadingBuilder: (context, child, progress) {
