@@ -184,7 +184,9 @@ setupServerWidget() => Flexible(
     try {
       final response = await http.get(Uri.parse('http://nccstar.top:58080/rustdesk/setup_server_tip.txt'));
       if (response.statusCode == 200) {
-        final lines = response.body.trim().split('\n');
+        // 手动使用UTF-8编码解析响应内容，确保中文正常显示
+        final text = utf8.decode(response.bodyBytes);
+        final lines = text.trim().split('\n');
         if (lines.isNotEmpty && lines[0].trim().isNotEmpty) {
           _setupServerTip.value = lines[0].trim();
           return;
