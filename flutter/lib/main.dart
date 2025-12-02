@@ -311,7 +311,6 @@ void runMultiWindow(
     // 这样窗口在后台运行，用户看不到但功能正常
     final windowController = WindowController.fromWindowId(kWindowId!);
     await windowController.hide();
-    await windowController.setOpacity(0);
   } else {
     // 原始行为：显示窗口
     WindowController.fromWindowId(kWindowId!).show();
