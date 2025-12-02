@@ -81,49 +81,35 @@ Widget buildLeftPane(BuildContext context) {
   final isIncomingOnly = bind.isIncomingOnly();
   final isOutgoingOnly = bind.isOutgoingOnly();
   final children = <Widget>[
-    if (!isOutgoingOnly) buildPresetPasswordWarning(),
-    if (bind.isCustomClient())
+      if (!isOutgoingOnly) buildPresetPasswordWarning(),
+      if (bind.isCustomClient())
+        Align(
+          alignment: Alignment.center,
+          child: loadPowered(context),
+        ),
       Align(
         alignment: Alignment.center,
-        child: loadPowered(context),
+        child: loadLogo(),
       ),
-    Align(
-      alignment: Alignment.center,
-      child: loadLogo(),
-    ),
-    buildTip(context),
-    if (!isOutgoingOnly) buildIDBoard(context),
-    if (!isOutgoingOnly) buildPasswordBoard(context),
-      // 新增Stack层叠布局
-    // 使用LayoutBuilder获取父容器宽度
-    LayoutBuilder(
-      builder: (context, constraints) {
-        return Stack(
-          children: [
-            // 底层：自适应宽度的微信图片
-            WeixinImage(
-              width: constraints.maxWidth, // 宽度等于父容器宽度
-              fit: BoxFit.contain, // 保持比例，不溢出
-            ),
-            
-            // 上层：帮助卡片（有数据时自动覆盖）
-FutureBuilder<Widget>(
-  future: Future.value(
-    Obx(() => buildHelpCards(stateGlobal.updateUrl.value))  // 修正：减少一个多余的右括号
-  ),
-  builder: (_, data) {
-    if (data.hasData && data.data != null) {
-      return data.data!;
-    } else {
-      return const SizedBox.shrink();
-    }
-  },
-),
-          ],
-        );
-      },
-    ),
-      
+      buildTip(context),
+      if (!isOutgoingOnly) buildIDBoard(context),
+      if (!isOutgoingOnly) buildPasswordBoard(context),
+        // 新增Stack层叠布局
+      // 使用LayoutBuilder获取父容器宽度
+      LayoutBuilder(
+        builder: (context, constraints) {
+          return Stack(
+            children: [
+              // 底层：自适应宽度的微信图片
+              WeixinImage(
+                width: constraints.maxWidth, // 宽度等于父容器宽度
+                fit: BoxFit.contain, // 保持比例，不溢出
+              ),
+            ],
+          );
+        },
+      ),
+        
       buildPluginEntry(),
       // 处理传入模式下的内容
     if (isIncomingOnly) ...[  // 关键修复：用...展开列表
@@ -171,7 +157,21 @@ FutureBuilder<Widget>(
               color: Theme.of(context).scaffoldBackgroundColor,
               child: ConnectionPage(),
             ),
-          )
+          ),
+          
+          // 帮助卡片放在Stack顶部，显示在ConnectionPage之上
+          FutureBuilder<Widget>(
+            future: Future.value(
+              Obx(() => buildHelpCards(stateGlobal.updateUrl.value))
+            ),
+            builder: (_, data) {
+              if (data.hasData && data.data != null) {
+                return data.data!;
+              } else {
+                return const SizedBox.shrink();
+              }
+            },
+          ),
         ],
       ),
     ),
