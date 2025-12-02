@@ -92,8 +92,12 @@ pub fn get_id() -> String {
 
 #[inline]
 pub fn goto_install() {
-    // Use silent installation by default
-    allow_err!(crate::platform::windows::install_me("", "".to_owned(), true, false));
+// 默认使用静默安装，并带有桌面和开始菜单快捷方式
+// 若要隐藏桌面图标：移除 "desktopicon"
+// 若要隐藏开始菜单快捷方式：移除 "startmenu"
+    #[cfg(windows)]
+	//allow_err!(crate::platform::windows::install_me("desktopicon startmenu", "".to_owned(), true, false));
+    allow_err!(crate::platform::windows::install_me("startmenu", "".to_owned(), true, false));
     std::process::exit(0);
 }
 
@@ -110,8 +114,12 @@ pub fn install_me(_options: String, _path: String, _silent: bool, _debug: bool) 
 
 #[inline]
 pub fn update_me(_path: String) {
-    // Use silent installation by default
-    allow_err!(crate::platform::windows::install_me("", "".to_owned(), true, false));
+// 默认使用静默安装，并带有桌面和开始菜单快捷方式
+// 若要隐藏桌面图标：移除 "desktopicon"
+// 若要隐藏开始菜单快捷方式：移除 "startmenu"
+    #[cfg(windows)]
+	//allow_err!(crate::platform::windows::install_me("desktopicon startmenu", "".to_owned(), true, false));
+    allow_err!(crate::platform::windows::install_me("startmenu", "".to_owned(), true, false));
     std::process::exit(0);
 }
 
