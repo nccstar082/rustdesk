@@ -31,12 +31,44 @@ class UserModel {
     });
   }
 
+  // Get built-in default username and password from config
+  Future<Map<String, String>> getBuiltInCredentials() async {
+    final username = await bind.mainGetLocalOption(key: 'api-default-username');
+    final password = await bind.mainGetLocalOption(key: 'api-default-password');
+    return {'username': username, 'password': password};
+  }
+
+  // Auto login with built-in credentials if not logged in
+  Future<void> autoLogin() async {
+    try {
+      final credentials = await getBuiltInCredentials();
+      final username = credentials['username'] ?? '';
+      final password = credentials['password'] ?? '';
+      
+      if (username.isNotEmpty && password.isNotEmpty) {
+        debugPrint('Attempting auto login with built-in credentials');
+        final loginRequest = LoginRequest(
+          username: username,
+          password: password,
+          id: await bind.mainGetMyId(),
+          uuid: await bind.mainGetUuid(),
+        );
+        await login(loginRequest);
+        debugPrint('Auto login successful');
+      }
+    } catch (e) {
+      debugPrint('Auto login failed: $e');
+    }
+  }
+
   void refreshCurrentUser() async {
     if (bind.isDisableAccount()) return;
     networkError.value = '';
     final token = bind.mainGetLocalOption(key: 'access_token');
     if (token == '') {
       await updateOtherModels();
+      // Auto login if not logged in
+      await autoLogin();
       return;
     }
     _updateLocalUserInfo();
