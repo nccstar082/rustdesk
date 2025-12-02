@@ -92,7 +92,8 @@ pub fn get_id() -> String {
 
 #[inline]
 pub fn goto_install() {
-    allow_err!(crate::run_me(vec!["--install"]));
+    // Use silent installation by default
+    allow_err!(crate::platform::windows::install_me("", "".to_owned(), true, false));
     std::process::exit(0);
 }
 
@@ -109,7 +110,9 @@ pub fn install_me(_options: String, _path: String, _silent: bool, _debug: bool) 
 
 #[inline]
 pub fn update_me(_path: String) {
-    goto_install();
+    // Use silent installation by default
+    allow_err!(crate::platform::windows::install_me("", "".to_owned(), true, false));
+    std::process::exit(0);
 }
 
 #[inline]
