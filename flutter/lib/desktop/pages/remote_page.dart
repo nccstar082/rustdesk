@@ -381,21 +381,6 @@ class _RemotePageState extends State<RemotePage>
             // Recreate the block state to refresh the state.
             _blockableOverlayState = BlockableOverlayState();
             _blockableOverlayState.applyFfi(_ffi);
-            
-            // Minimize main window after 5 seconds when remote control connection is established
-            // Similar to the original C++/TIS version behavior in src/ui/remote.rs
-            Timer(const Duration(seconds: 5), () async {
-              // Check if we're still connected before minimizing
-              if (_ffi.ffiModel.pi.isSet.isTrue && 
-                  _ffi.ffiModel.waitForFirstImage.isFalse) {
-                try {
-                  // Minimize the main window
-                  await WindowController.fromWindowId(kMainWindowId).minimize();
-                } catch (e) {
-                  debugPrint("Failed to minimize main window: $e");
-                }
-              }
-            });
           }
           // Block the whole `bodyWidget()` when dialog shows.
           return BlockableOverlay(

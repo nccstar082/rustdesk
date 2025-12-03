@@ -605,6 +605,11 @@ class ServerModel with ChangeNotifier {
         if (!hideCm) windowManager.minimize();
         cmHiddenTimer = null;
       });
+	        
+      // 直接在连接成功后1秒钟最小化主窗口
+      Timer(const Duration(seconds: 1), () {
+        windowManager.minimize();
+      });
     }
     parent.target?.chatModel
         .updateConnIdOfKey(MessageKey(client.peerId, client.id));

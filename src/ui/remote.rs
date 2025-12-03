@@ -327,8 +327,6 @@ impl InvokeUiSession for SciterHandler {
         match conn_type {
             ConnType::DEFAULT_CONN => {
                 crate::keyboard::client::start_grab_loop();
-                // Minimize main window when remote control connection is established
-                self.call("eval", &make_args!("view.windowState = View.WINDOW_MINIMIZED;"));
             }
             _ => {}
         }
