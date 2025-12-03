@@ -180,6 +180,12 @@ void runMainApp(bool startService) async {
       windowManager.focus();
       // Move registration of active main window here to prevent from async visible check.
       rustDeskWinManager.registerActiveWindow(kWindowMainId);
+      //增加开始Auto minimize main window after 10 seconds
+      Timer(const Duration(seconds: 10), () async {
+        if (!await windowManager.isMinimized()) {
+          windowManager.minimize();  //结尾
+        }
+      });
     }
     windowManager.setOpacity(1);
     windowManager.setTitle(getWindowName());
