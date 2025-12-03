@@ -304,10 +304,13 @@ void runConnectionManagerScreen() async {
     const DesktopServerPage(),
     MyTheme.currentThemeMode(),
   );
-  // 总是隐藏连接管理器窗口
-  final bool hide = true;
+  final hide = await bind.cmGetConfig(name: "hide_cm") == 'true';
   gFFI.serverModel.hideCm = hide;
-  await hideCmWindow(isStartup: true);
+  if (hide) {
+    await hideCmWindow(isStartup: true);
+  } else {
+    await showCmWindow(isStartup: true);
+  }
   setResizable(false);
   // Start the uni links handler and redirect links to Native, not for Flutter.
   listenUniLinks(handleByFlutter: false);
@@ -321,11 +324,24 @@ showCmWindow({bool isStartup = false}) async {
         size: kConnectionManagerWindowSizeClosedChat, alwaysOnTop: true);
     await windowManager.waitUntilReadyToShow(windowOptions, null);
     bind.mainHideDock();
-    // 即使调用showCmWindow，也不显示连接管理器窗口
-    await hideCmWindow(isStartup: true);
+    await Future.wait([
+      windowManager.show(),
+      windowManager.focus(),
+      windowManager.setOpacity(1)
+    ]);
+    // ensure initial window size to be changed
+    await windowManager.setSizeAlignment(
+        kConnectionManagerWindowSizeClosedChat, Alignment.topRight);
+    _isCmReadyToShow = true;
   } else if (_isCmReadyToShow) {
-    // 即使调用showCmWindow，也不显示连接管理器窗口
-    await hideCmWindow(isStartup: false);
+    if (await windowManager.getOpacity() != 1) {
+      await windowManager.setOpacity(1);
+      await windowManager.focus();
+      await windowManager.minimize(); //needed
+      await windowManager.setSizeAlignment(
+          kConnectionManagerWindowSizeClosedChat, Alignment.topRight);
+      windowOnTop(null);
+    }
   }
 }
 
