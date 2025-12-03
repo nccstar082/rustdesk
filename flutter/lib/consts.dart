@@ -187,6 +187,10 @@ const String kOptionDisableFloatingWindow = "disable-floating-window";
 
 const String kOptionKeepScreenOn = "keep-screen-on";
 
+// 新增：控制窗口弹出行为的常量
+// 是否屏蔽所有弹出窗口（无感弹出）
+const bool kDisableAllPopups = true; // 设置为true时，所有窗口将在后台运行，用户看不到弹出窗口
+
 const String kOptionShowMobileAction = "showMobileActions";
 
 const String kUrlActionClose = "close";

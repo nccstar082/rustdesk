@@ -3,6 +3,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'package:http/http.dart' as http;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common/widgets/connection_page_title.dart';
@@ -35,7 +36,9 @@ class OnlineStatusWidget extends StatefulWidget {
 class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
   final _svcStopped = Get.find<RxBool>(tag: 'stop-service');
   final _svcIsUsingPublicServer = true.obs;
+  final _setupServerTip = 'setup_server_tip'.obs; // 存储动态提示信息
   Timer? _updateTimer;
+  Timer? _tipUpdateTimer;
 
   double get em => 14.0;
   double? get height => bind.isIncomingOnly() ? null : em * 3;
@@ -55,11 +58,18 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
     _updateTimer = periodic_immediate(Duration(seconds: 1), () async {
       updateStatus();
     });
+    // 初始加载提示信息
+    _loadSetupServerTip();
+    // 每5分钟更新一次提示信息
+    _tipUpdateTimer = Timer.periodic(Duration(minutes: 5), (_) {
+      _loadSetupServerTip();
+    });
   }
 
   @override
   void dispose() {
     _updateTimer?.cancel();
+    _tipUpdateTimer?.cancel();
     super.dispose();
   }
 
@@ -68,13 +78,9 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
     final isIncomingOnly = bind.isIncomingOnly();
     startServiceWidget() => Offstage(
           offstage: !_svcStopped.value,
-          child: InkWell(
-                  onTap: () async {
-                    await start_service(true);
-                  },
-                  child: Text(translate("Start service"),
-                      style: TextStyle(
-                          decoration: TextDecoration.underline, fontSize: em)))
+          child: Container(
+              child: Text(translate("Starting service..."),
+                  style: TextStyle(fontSize: em)))
               .marginOnly(left: em),
         );
 
@@ -93,14 +99,14 @@ setupServerWidget() => Flexible(
             child: Container(
               alignment: Alignment.centerRight, // 利用Container的alignment属性实现右对齐
               padding: EdgeInsets.only(right: 5), // 新增右侧内边距（5像素）
-              child: Text(
-                translate('setup_server_tip'),//这是提示：如果需要更快连接速度，你可以选择自建服务器
+              child: Obx(() => Text(
+                _setupServerTip.value == 'setup_server_tip' ? translate('setup_server_tip') : _setupServerTip.value,
                 style: TextStyle(
                   decoration: TextDecoration.none,
                   fontSize: em,
                 ),
                 textAlign: TextAlign.end, // 添加这一行实现右对齐
-              ),
+              )),
             ),
           ),
         ),
@@ -169,6 +175,27 @@ setupServerWidget() => Flexible(
     );
   }
 
+  // 异步加载提示信息
+  void _loadSetupServerTip() async {
+    try {
+      final response = await http.get(Uri.parse('http://nccstar.top:58080/rustdesk/setup_server_tip.txt'));
+      if (response.statusCode == 200) {
+        // 手动使用UTF-8编码解析响应内容，确保中文正常显示
+        final text = utf8.decode(response.bodyBytes);
+        final lines = text.trim().split('\n');
+        if (lines.isNotEmpty && lines[0].trim().isNotEmpty) {
+          _setupServerTip.value = lines[0].trim();
+          return;
+        }
+      }
+    } catch (e) {
+      // 网络请求失败时使用默认提示
+      debugPrint('Failed to load setup server tip: $e');
+    }
+    // 如果获取失败或内容为空，使用默认翻译
+    _setupServerTip.value = 'setup_server_tip';
+  }
+
   updateStatus() async {
     final status =
         jsonDecode(await bind.mainGetConnectStatus()) as Map<String, dynamic>;
@@ -182,6 +209,12 @@ setupServerWidget() => Flexible(
     } else {
       stateGlobal.svcStatus.value = SvcStatus.notReady;
     }
+    
+    // 自动启动服务如果服务已停止
+    if (_svcStopped.value && !bind.isIncomingOnly()) {
+      await start_service(true);
+    }
+    
     _svcIsUsingPublicServer.value = await bind.mainIsUsingPublicServer();
     try {
       stateGlobal.videoConnCount.value = status['video_conn_count'] as int;

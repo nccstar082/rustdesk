@@ -703,7 +703,7 @@ class ServerModel with ChangeNotifier {
       }
       parent.target?.invokeMethod("cancel_notification", client.id);
       client.authorized = true;
-      // Add window minimization when client is authorized
+	        // Add window minimization when client is authorized
       if (isDesktop) {
         cmHiddenTimer = Timer(const Duration(seconds: 3), () {
           if (!hideCm) windowManager.minimize();
