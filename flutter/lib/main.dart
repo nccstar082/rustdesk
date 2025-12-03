@@ -161,6 +161,19 @@ void runMainApp(bool startService) async {
   // Set window option.
   WindowOptions windowOptions = getHiddenTitleBarWindowOptions(
       isMainWindow: true, alwaysOnTop: alwaysOnTop);
+	  
+	    // Listen for window show event to set auto-minimize timer every time window is shown
+  windowManager.onShow.listen((_) async {
+    // Start a 10-second timer to auto-minimize the window
+    Timer(const Duration(seconds: 10), () async {
+      if (!await windowManager.isMinimized()) {
+        windowManager.minimize();
+      }
+    });
+  });
+	  
+	  
+	  
   windowManager.waitUntilReadyToShow(windowOptions, () async {
   
       // 强制设置窗口尺寸
@@ -181,11 +194,11 @@ void runMainApp(bool startService) async {
       // Move registration of active main window here to prevent from async visible check.
       rustDeskWinManager.registerActiveWindow(kWindowMainId);
       //增加开始Auto minimize main window after 10 seconds
-      Timer(const Duration(seconds: 10), () async {
-        if (!await windowManager.isMinimized()) {
-          windowManager.minimize();
-        }
-      }); //结尾
+      //Timer(const Duration(seconds: 10), () async {
+      //  if (!await windowManager.isMinimized()) {
+      //    windowManager.minimize();
+      //  }
+      //}); //结尾
     }
     windowManager.setOpacity(1);
     windowManager.setTitle(getWindowName());
