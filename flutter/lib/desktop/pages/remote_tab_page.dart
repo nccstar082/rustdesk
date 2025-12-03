@@ -438,10 +438,10 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
         Future.delayed(Duration(milliseconds: isWindows ? 100 : 0), () async {
           await windowOnTop(windowId());
 		            
-          // 直接在连接成功后1秒钟最小化主窗口，以下两行暂时不启用
-          //Future.delayed(Duration(seconds: 1), () async {
-            //await WindowController.fromWindowId(windowId()).minimize();
-          //});
+          // 直接在连接成功后1秒钟最小化主窗口
+          Future.delayed(Duration(seconds: 1), () async {
+            await WindowController.fromWindowId(windowId()).minimize();
+          });
         });
       });
       ConnectionTypeState.init(id);
