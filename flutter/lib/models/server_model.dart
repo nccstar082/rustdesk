@@ -703,10 +703,6 @@ class ServerModel with ChangeNotifier {
       }
       parent.target?.invokeMethod("cancel_notification", client.id);
       client.authorized = true;
-	        // Minimize window immediately after client is authorized
-      if (isDesktop && !hideCm) {
-        windowManager.minimize();
-      }
       notifyListeners();
     } else {
       bind.cmLoginRes(connId: client.id, res: res);
