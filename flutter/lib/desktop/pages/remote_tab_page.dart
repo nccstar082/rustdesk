@@ -441,7 +441,7 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
           // 直接在连接成功后1秒钟最小化主窗口，以下两行暂时不启用
           //Future.delayed(Duration(seconds: 1), () async {
             //await WindowController.fromWindowId(windowId()).minimize();
-          });
+          //});
         });
       });
       ConnectionTypeState.init(id);
