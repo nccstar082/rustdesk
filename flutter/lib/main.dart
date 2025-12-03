@@ -183,9 +183,9 @@ void runMainApp(bool startService) async {
       //增加开始Auto minimize main window after 10 seconds
       Timer(const Duration(seconds: 10), () async {
         if (!await windowManager.isMinimized()) {
-          windowManager.minimize();  //结尾
+          windowManager.minimize();
         }
-      });
+      }); //结尾
     }
     windowManager.setOpacity(1);
     windowManager.setTitle(getWindowName());
