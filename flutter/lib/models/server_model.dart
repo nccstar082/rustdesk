@@ -703,10 +703,6 @@ class ServerModel with ChangeNotifier {
       }
       parent.target?.invokeMethod("cancel_notification", client.id);
       client.authorized = true;
-	        // Minimize main window when remote control connection is established
-      if (isDesktop) {
-        windowManager.minimize();
-      }
       notifyListeners();
     } else {
       bind.cmLoginRes(connId: client.id, res: res);
