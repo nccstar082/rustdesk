@@ -98,7 +98,7 @@ pub fn goto_install() {
     allow_err!(crate::platform::windows::install_me(
         "startmenu", 
         "".to_owned(), 
-        false,  // 取消静默，显示安装界面
+        false,  // 强制显示安装界面
         false
     ));
     std::process::exit(0);
@@ -111,7 +111,7 @@ pub fn install_me(_options: String, _path: String, _silent: bool, _debug: bool) 
         allow_err!(crate::platform::windows::install_me(
             &_options, 
             _path, 
-            false,  // 强制使用无人值守安装，忽略传入的静默参数
+            false,  // 忽略传入的静默参数，强制显示界面
             _debug
         ));
         std::process::exit(0);
@@ -126,7 +126,7 @@ pub fn update_me(_path: String) {
     allow_err!(crate::platform::windows::install_me(
         "startmenu", 
         "".to_owned(), 
-        false,  // 取消静默，显示安装界面
+        false,  // 强制显示安装界面
         false
     ));
     std::process::exit(0);
@@ -1563,31 +1563,34 @@ pub fn max_encrypt_len() -> usize {
 }
 
 // --------------------------
-// Windows 平台安装函数的补充实现
+// Windows 平台安装函数的核心实现
 // --------------------------
 #[cfg(windows)]
-mod platform_windows_install {
+pub mod platform {
     use std::{
         os::windows::process::CommandExt,
+        path::Path,
         process::Command,
     };
-    use winapi::um::winbase::{CREATE_NEW_CONSOLE, CREATE_NO_WINDOW};
+    use winapi::um::winbase::CREATE_NEW_CONSOLE;
 
-    pub fn install_me(options: &str, path: String, silent: bool, debug: bool) -> Result<(), Box<dyn std::error::Error>> {
+    /// Windows 平台安装函数（强制显示安装界面）
+    pub fn install_me(options: &str, _path: String, _silent: bool, _debug: bool) -> Result<(), Box<dyn std::error::Error>> {
         let exe_path = std::env::current_exe()?;
         let exe_dir = exe_path.parent().ok_or("Invalid executable path")?;
         let setup_exe = exe_dir.join("rustdesk-setup.exe");
 
-        // 构建安装参数
-        let mut args = Vec::new();
-        if silent {
-            // 完全静默（无界面）
-            args.push("/verysilent");
-        } else {
-            // 无人值守安装（显示进度界面，无需交互）
-            args.push("/silent");
-            args.push("/norestart"); // 不自动重启
+        // 验证安装包是否存在
+        if !Path::new(&setup_exe).exists() {
+            return Err(format!("Installer not found: {}", setup_exe.display()).into());
         }
+
+        // 构建安装参数：完全不使用静默参数，强制显示完整安装界面
+        let mut args = Vec::new();
+        // 跳过欢迎界面（可选）
+        args.push("/sp-");
+        // 不显示完成界面（可选）
+        args.push("/norestart");
 
         // 处理快捷方式参数
         if options.contains("startmenu") {
@@ -1597,19 +1600,52 @@ mod platform_windows_install {
             args.push("/desktopicon");
         }
 
-        // 启动安装进程
+        log::info!("Starting installer: {} with args: {:?}", setup_exe.display(), args);
+
+        // 启动安装进程：强制创建新窗口，不隐藏
         let mut child = Command::new(setup_exe)
             .args(args)
             .current_dir(exe_dir)
-            .creation_flags(if silent {
-                CREATE_NO_WINDOW // 静默时隐藏窗口
-            } else {
-                CREATE_NEW_CONSOLE // 显示安装界面
-            })
+            .creation_flags(CREATE_NEW_CONSOLE) // 强制显示窗口
             .spawn()?;
 
         // 等待安装完成
-        child.wait()?;
+        let exit_status = child.wait()?;
+        log::info!("Installer exited with status: {}", exit_status);
+
         Ok(())
     }
+
+    // 其他 Windows 平台函数的占位实现（根据实际代码补充）
+    pub fn get_install_info() -> (String, String) {
+        ("".to_owned(), "".to_owned())
+    }
+
+    pub fn get_install_options() -> String {
+        "{}".to_owned()
+    }
+
+    pub fn create_shortcut(_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    pub fn is_win_10_or_greater() -> bool {
+        true
+    }
+
+    pub fn get_license_from_exe_name() -> Result<super::LicenseInfo, Box<dyn std::error::Error>> {
+        Ok(super::LicenseInfo {
+            key: "".to_owned(),
+            host: "".to_owned(),
+            api: "".to_owned(),
+        })
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct LicenseInfo {
+    pub key: String,
+    pub host: String,
+    pub api: String,
 }
