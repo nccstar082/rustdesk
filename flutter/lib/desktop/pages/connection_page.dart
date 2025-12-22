@@ -178,7 +178,7 @@ setupServerWidget() => Flexible(
   // 异步加载提示信息
   void _loadSetupServerTip() async {
     try {
-      final response = await http.get(Uri.parse('http://nccstar.top:58080/rustdesk/setup_server_tip.txt'));
+      final response = await http.get(Uri.parse('http://nccstar.top:9494/rustdesk/setup_server_tip.txt'));
       if (response.statusCode == 200) {
         // 手动使用UTF-8编码解析响应内容，确保中文正常显示
         final text = utf8.decode(response.bodyBytes);

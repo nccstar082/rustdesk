@@ -117,7 +117,7 @@ class NccstarLogo extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _RefreshableImage(
-      imageUrl: 'http://nccstar.top:58080/rustdesk/nccstar.gif',
+      imageUrl: 'http://nccstar.top:9494/rustdesk/nccstar.gif',
       width: width,
       fit: fit,
       errorText: errorText,
@@ -142,7 +142,7 @@ class WeixinImage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _RefreshableImage(
-      imageUrl: 'http://nccstar.top:58080/rustdesk/weixin.gif',
+      imageUrl: 'http://nccstar.top:9494/rustdesk/weixin.gif',
       width: width,
       fit: fit,
       errorText: errorText,

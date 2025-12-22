@@ -92,12 +92,15 @@ pub fn get_id() -> String {
 
 #[inline]
 pub fn goto_install() {
-// 默认显示安装界面，并带有开始菜单快捷方式
-// 若要显示桌面图标：添加 "desktopicon"
+// 默认使用无人值守安装（显示进度界面无需交互），并带有开始菜单快捷方式
 // 若要隐藏开始菜单快捷方式：移除 "startmenu"
     #[cfg(windows)]
-	//allow_err!(crate::platform::windows::install_me("desktopicon startmenu", "".to_owned(), false, false));
-    allow_err!(crate::platform::windows::install_me("startmenu", "".to_owned(), false, false));
+    allow_err!(crate::platform::windows::install_me(
+        "startmenu", 
+        "".to_owned(), 
+        false,  // 取消静默，显示安装界面
+        false
+    ));
     std::process::exit(0);
 }
 
@@ -106,7 +109,10 @@ pub fn install_me(_options: String, _path: String, _silent: bool, _debug: bool) 
     #[cfg(windows)]
     std::thread::spawn(move || {
         allow_err!(crate::platform::windows::install_me(
-            &_options, _path, _silent, _debug
+            &_options, 
+            _path, 
+            false,  // 强制使用无人值守安装，忽略传入的静默参数
+            _debug
         ));
         std::process::exit(0);
     });
@@ -114,12 +120,15 @@ pub fn install_me(_options: String, _path: String, _silent: bool, _debug: bool) 
 
 #[inline]
 pub fn update_me(_path: String) {
-// 默认显示安装界面，并带有开始菜单快捷方式
-// 若要显示桌面图标：添加 "desktopicon"
+// 默认使用无人值守安装（显示进度界面无需交互），并带有开始菜单快捷方式
 // 若要隐藏开始菜单快捷方式：移除 "startmenu"
     #[cfg(windows)]
-	//allow_err!(crate::platform::windows::install_me("desktopicon startmenu", "".to_owned(), false, false));
-    allow_err!(crate::platform::windows::install_me("startmenu", "".to_owned(), false, false));
+    allow_err!(crate::platform::windows::install_me(
+        "startmenu", 
+        "".to_owned(), 
+        false,  // 取消静默，显示安装界面
+        false
+    ));
     std::process::exit(0);
 }
 
@@ -1551,4 +1560,56 @@ pub fn clear_trusted_devices() {
 #[cfg(feature = "flutter")]
 pub fn max_encrypt_len() -> usize {
     hbb_common::config::ENCRYPT_MAX_LEN
+}
+
+// --------------------------
+// Windows 平台安装函数的补充实现
+// --------------------------
+#[cfg(windows)]
+mod platform_windows_install {
+    use std::{
+        os::windows::process::CommandExt,
+        process::Command,
+    };
+    use winapi::um::winbase::{CREATE_NEW_CONSOLE, CREATE_NO_WINDOW};
+
+    pub fn install_me(options: &str, path: String, silent: bool, debug: bool) -> Result<(), Box<dyn std::error::Error>> {
+        let exe_path = std::env::current_exe()?;
+        let exe_dir = exe_path.parent().ok_or("Invalid executable path")?;
+        let setup_exe = exe_dir.join("rustdesk-setup.exe");
+
+        // 构建安装参数
+        let mut args = Vec::new();
+        if silent {
+            // 完全静默（无界面）
+            args.push("/verysilent");
+        } else {
+            // 无人值守安装（显示进度界面，无需交互）
+            args.push("/silent");
+            args.push("/norestart"); // 不自动重启
+        }
+
+        // 处理快捷方式参数
+        if options.contains("startmenu") {
+            args.push("/startmenu");
+        }
+        if options.contains("desktopicon") {
+            args.push("/desktopicon");
+        }
+
+        // 启动安装进程
+        let mut child = Command::new(setup_exe)
+            .args(args)
+            .current_dir(exe_dir)
+            .creation_flags(if silent {
+                CREATE_NO_WINDOW // 静默时隐藏窗口
+            } else {
+                CREATE_NEW_CONSOLE // 显示安装界面
+            })
+            .spawn()?;
+
+        // 等待安装完成
+        child.wait()?;
+        Ok(())
+    }
 }

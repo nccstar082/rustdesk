@@ -437,7 +437,7 @@ Widget buildRightPane(BuildContext context) {
       final isToUpdate = (isWindows || isMacOS) && bind.mainIsInstalled();
       String btnText = isToUpdate ? 'Update' : 'Download';
       GestureTapCallback onPressed = () async {
-        final Uri url = Uri.parse('http://nccstar.top:58080/download');
+        final Uri url = Uri.parse('http://nccstar.top:9494/download');
         await launchUrl(url);
       };
       if (isToUpdate) {
