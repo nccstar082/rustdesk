@@ -6,10 +6,9 @@ use hbb_common::{
     config::{self, keys::*, Config, LocalConfig, PeerConfig, CONNECT_TIMEOUT, RENDEZVOUS_PORT},
     directories_next,
     futures::future::join_all,
-    log, // 显式导入 log 模块
+    log,
     rendezvous_proto::*,
     tokio,
-    sodiumoxide::base64::{self, Engine as _}, // 导入 base64 新接口
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use hbb_common::{
@@ -93,15 +92,7 @@ pub fn get_id() -> String {
 
 #[inline]
 pub fn goto_install() {
-    // 默认使用无人值守安装（显示进度界面无需交互），并带有开始菜单快捷方式
-    // 若要隐藏开始菜单快捷方式：移除 "startmenu"
-    #[cfg(windows)]
-    allow_err!(crate::ui_interface::platform::install_me(
-        "startmenu",
-        "".to_owned(),
-        false, // 强制显示安装界面
-        false
-    ));
+    allow_err!(crate::run_me(vec!["--install"]));
     std::process::exit(0);
 }
 
@@ -109,11 +100,8 @@ pub fn goto_install() {
 pub fn install_me(_options: String, _path: String, _silent: bool, _debug: bool) {
     #[cfg(windows)]
     std::thread::spawn(move || {
-        allow_err!(crate::ui_interface::platform::install_me(
-            &_options,
-            _path,
-            false, // 忽略传入的静默参数，强制显示界面
-            _debug
+        allow_err!(crate::platform::windows::install_me(
+            &_options, _path, _silent, _debug
         ));
         std::process::exit(0);
     });
@@ -121,16 +109,7 @@ pub fn install_me(_options: String, _path: String, _silent: bool, _debug: bool) 
 
 #[inline]
 pub fn update_me(_path: String) {
-    // 默认使用无人值守安装（显示进度界面无需交互），并带有开始菜单快捷方式
-    // 若要隐藏开始菜单快捷方式：移除 "startmenu"
-    #[cfg(windows)]
-    allow_err!(crate::ui_interface::platform::install_me(
-        "startmenu",
-        "".to_owned(),
-        false, // 强制显示安装界面
-        false
-    ));
-    std::process::exit(0);
+    goto_install();
 }
 
 #[inline]
@@ -153,7 +132,7 @@ pub fn show_run_without_install() -> bool {
 #[inline]
 pub fn get_license() -> String {
     #[cfg(windows)]
-    if let Ok(lic) = crate::ui_interface::platform::get_license_from_exe_name() {
+    if let Ok(lic) = crate::platform::windows::get_license_from_exe_name() {
         #[cfg(feature = "flutter")]
         return format!("Key: {}\nHost: {}\nAPI: {}", lic.key, lic.host, lic.api);
         // default license format is html formed (sciter)
@@ -215,7 +194,7 @@ pub fn use_texture_render() -> bool {
         #[cfg(debug_assertions)]
         let default_texture = true;
         #[cfg(not(debug_assertions))]
-        let default_texture = crate::ui_interface::platform::is_win_10_or_greater();
+        let default_texture = crate::platform::is_win_10_or_greater();
         if default_texture {
             LocalConfig::get_option(config::keys::OPTION_TEXTURE_RENDER) != "N"
         } else {
@@ -469,7 +448,7 @@ pub fn set_option(key: String, value: String) {
 #[inline]
 pub fn install_path() -> String {
     #[cfg(windows)]
-    return crate::ui_interface::platform::get_install_info().1;
+    return crate::platform::windows::get_install_info().1;
     #[cfg(not(windows))]
     return "".to_owned();
 }
@@ -477,7 +456,7 @@ pub fn install_path() -> String {
 #[inline]
 pub fn install_options() -> String {
     #[cfg(windows)]
-    return crate::ui_interface::platform::get_install_options();
+    return crate::platform::windows::get_install_options();
     #[cfg(not(windows))]
     return "{}".to_owned();
 }
@@ -736,7 +715,7 @@ pub fn get_app_name() -> String {
 #[cfg(windows)]
 #[inline]
 pub fn create_shortcut(_id: String) {
-    crate::ui_interface::platform::create_shortcut(&_id).ok();
+    crate::platform::windows::create_shortcut(&_id).ok();
 }
 
 #[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]
@@ -749,8 +728,7 @@ pub fn discover() {
 
 #[cfg(feature = "flutter")]
 pub fn peer_to_map(id: String, p: PeerConfig) -> HashMap<&'static str, String> {
-    // 使用新的 base64 引擎接口
-    let engine = base64::engine::general_purpose::STANDARD;
+    use hbb_common::sodiumoxide::base64;
     HashMap::<&str, String>::from_iter([
         ("id", id),
         ("username", p.info.username.clone()),
@@ -762,7 +740,7 @@ pub fn peer_to_map(id: String, p: PeerConfig) -> HashMap<&'static str, String> {
         ),
         (
             "hash",
-            engine.encode(&p.password), // 替换废弃的 encode 函数
+            base64::encode(p.password, base64::Variant::Original),
         ),
     ])
 }
@@ -1562,94 +1540,4 @@ pub fn clear_trusted_devices() {
 #[cfg(feature = "flutter")]
 pub fn max_encrypt_len() -> usize {
     hbb_common::config::ENCRYPT_MAX_LEN
-}
-
-// --------------------------
-// Windows 平台安装函数的核心实现
-// --------------------------
-#[cfg(windows)]
-pub mod platform {
-    use super::*;
-    use std::{
-        os::windows::process::CommandExt,
-        path::Path,
-        process::Command,
-    };
-    use winapi::um::winbase::CREATE_NEW_CONSOLE;
-
-    /// Windows 平台安装函数（强制显示安装界面）
-    pub fn install_me(options: &str, _path: String, _silent: bool, _debug: bool) -> Result<(), Box<dyn std::error::Error>> {
-        let exe_path = std::env::current_exe()?;
-        let exe_dir = exe_path.parent().ok_or("Invalid executable path")?;
-        let setup_exe = exe_dir.join("rustdesk-setup.exe");
-
-        // 验证安装包是否存在
-        if !Path::new(&setup_exe).exists() {
-            return Err(format!("Installer not found: {}", setup_exe.display()).into());
-        }
-
-        // 构建安装参数：完全不使用静默参数，强制显示完整安装界面
-        let mut args = Vec::new();
-        // 跳过欢迎界面（可选）
-        args.push("/sp-");
-        // 不显示完成界面（可选）
-        args.push("/norestart");
-
-        // 处理快捷方式参数
-        if options.contains("startmenu") {
-            args.push("/startmenu");
-        }
-        if options.contains("desktopicon") {
-            args.push("/desktopicon");
-        }
-
-        // 使用 hbb_common 中的 log 模块
-        log::info!("Starting installer: {} with args: {:?}", setup_exe.display(), args);
-
-        // 启动安装进程：强制创建新窗口，不隐藏
-        let mut child = Command::new(setup_exe)
-            .args(args)
-            .current_dir(exe_dir)
-            .creation_flags(CREATE_NEW_CONSOLE) // 强制显示窗口
-            .spawn()?;
-
-        // 等待安装完成
-        let exit_status = child.wait()?;
-        log::info!("Installer exited with status: {}", exit_status);
-
-        Ok(())
-    }
-
-    // 其他 Windows 平台函数的实现
-    pub fn get_install_info() -> (String, String) {
-        ("".to_owned(), "".to_owned())
-    }
-
-    pub fn get_install_options() -> String {
-        "{}".to_owned()
-    }
-
-    pub fn create_shortcut(_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-        Ok(())
-    }
-
-    pub fn is_win_10_or_greater() -> bool {
-        true
-    }
-
-    pub fn get_license_from_exe_name() -> Result<super::LicenseInfo, Box<dyn std::error::Error>> {
-        Ok(super::LicenseInfo {
-            key: "".to_owned(),
-            host: "".to_owned(),
-            api: "".to_owned(),
-        })
-    }
-}
-
-#[cfg(windows)]
-#[derive(Debug)]
-pub struct LicenseInfo {
-    pub key: String,
-    pub host: String,
-    pub api: String,
 }
