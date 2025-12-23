@@ -168,7 +168,34 @@ jobs:
         run: |
           # Windows: build RustDesk
           python3 .\build.py --portable --hwcodec --flutter --vram --skip-portable-pack
-          mv ./flutter/build/windows/x64/runner/Release ./rustdesk
+          
+          # Debug: Check if Flutter build directory exists and list contents
+          if [ -d "./flutter/build/windows/x64/runner/Release" ]; then
+            echo "Flutter build directory exists, listing contents:"
+            ls -la ./flutter/build/windows/x64/runner/Release/
+          else
+            echo "Flutter build directory does not exist, checking parent directories:"
+            ls -la ./flutter/
+            ls -la ./flutter/build/
+            ls -la ./flutter/build/windows/
+            ls -la ./flutter/build/windows/x64/
+            ls -la ./flutter/build/windows/x64/runner/
+          fi
+          
+          # Check if build.py completed successfully
+          echo "Build.py exit code: $?"
+          
+          # Check if Flutter build directory exists using standard path format
+          flutter_build_dir="./flutter/build/windows/x64/runner/Release"
+          if [ -d "$flutter_build_dir" ]; then
+            echo "Flutter build directory found, moving to rustdesk..."
+            mv "$flutter_build_dir" ./rustdesk
+          else
+            echo "ERROR: Flutter build directory not found at $flutter_build_dir"
+            # List all directories to debug
+            find ./flutter -type d | sort
+            exit 1
+          fi
 
           # Download usbmmidd_v2.zip and extract it to ./rustdesk
           Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
