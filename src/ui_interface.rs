@@ -90,17 +90,14 @@ pub fn get_id() -> String {
     return ipc::get_id();
 }
 
-// 注意：Rust不支持函数重载，我们使用带有默认参数的单一函数
 #[inline]
-/// 无人值守安装函数，支持控制是否创建桌面快捷方式
-/// 参数：
-/// - desktop_shortcut: true 表示创建桌面和开始菜单快捷方式，false 表示仅创建开始菜单快捷方式
+/// 无人值守安装函数，默认仅创建开始菜单快捷方式
 /// 参考：通过设置 unattended-install 标志实现自动点击安装按钮
-pub fn goto_install(desktop_shortcut: bool) {
+pub fn goto_install() {
     // 设置无人值守安装标志，用于UI自动点击安装按钮
     config::Config::set_option("unattended-install".into(), "true".to_string());
-    // 根据参数选择快捷方式选项
-    let options = if desktop_shortcut { "desktopicon startmenu" } else { "startmenu" };
+    // 默认仅创建开始菜单快捷方式，如需桌面快捷方式请修改为"desktopicon startmenu"
+    let options = "startmenu";
     // 调用安装函数，silent=false表示显示安装界面
     #[cfg(windows)]
     allow_err!(crate::platform::windows::install_me(options, "".to_owned(), false, false));
@@ -132,20 +129,18 @@ pub fn install_me(_options: String, _path: String, _silent: bool, _debug: bool) 
     });
 }
 
-// 注意：Rust不支持函数重载，我们使用带有默认参数的单一函数
 #[inline]
-/// 无人值守更新函数，支持控制是否创建桌面快捷方式
+/// 无人值守更新函数，默认仅创建开始菜单快捷方式
 /// 参数：
 /// - _path: 更新包路径，为空则使用默认路径
-/// - desktop_shortcut: true 表示创建桌面和开始菜单快捷方式，false 表示仅创建开始菜单快捷方式
 /// 参考：通过设置 unattended-install 标志实现自动点击安装按钮
-pub fn update_me(_path: String, desktop_shortcut: bool) {
+pub fn update_me(_path: String) {
     // 设置无人值守更新标志，用于UI自动点击安装按钮
     config::Config::set_option("unattended-install".into(), "true".to_string());
     // 处理更新包路径
     let path = if _path.is_empty() { "".to_owned() } else { _path };
-    // 根据参数选择快捷方式选项
-    let options = if desktop_shortcut { "desktopicon startmenu" } else { "startmenu" };
+    // 默认仅创建开始菜单快捷方式，如需桌面快捷方式请修改为"desktopicon startmenu"
+    let options = "startmenu";
     // 调用安装函数，silent=false表示显示安装界面
     #[cfg(windows)]
     allow_err!(crate::platform::windows::install_me(options, path, false, false));

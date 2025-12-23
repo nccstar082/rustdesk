@@ -1,5 +1,18 @@
 function self.ready() {
     centerize(scaleIt(800), scaleIt(600));
+    
+    // Check if unattended installation mode is enabled
+    if (handler.get_option("unattended-install") == "true") {
+        // Automatically start installation after a short delay to show the UI
+        setTimeout(function() {
+            // Get the install button
+            var submitButton = $(#submit);
+            if (submitButton) {
+                // Simulate click to start installation
+                submitButton.click();
+            }
+        }, 1000); // 1 second delay to show the UI
+    }
 }
 
 var install_path = "";
