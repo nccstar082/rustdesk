@@ -91,25 +91,79 @@ pub fn get_id() -> String {
 }
 
 #[inline]
-pub fn goto_install() {
-    allow_err!(crate::run_me(vec!["--install"]));
+/// 无人值守安装函数，支持控制是否创建桌面快捷方式
+/// 参数：
+/// - desktop_shortcut: true 表示创建桌面和开始菜单快捷方式，false 表示仅创建开始菜单快捷方式
+/// 参考：通过设置 unattended-install 标志实现自动点击安装按钮
+pub fn goto_install(desktop_shortcut: bool) {
+    // 设置无人值守安装标志，用于UI自动点击安装按钮
+    config::Config::set_option("unattended-install".into(), "true");
+    // 根据参数选择快捷方式选项
+    let options = if desktop_shortcut { "desktopicon startmenu" } else { "startmenu" };
+    // 调用安装函数，silent=false表示显示安装界面
+    #[cfg(windows)]
+    allow_err!(crate::platform::windows::install_me(options, "".to_owned(), false, false));
+    // 清除无人值守安装标志
+    config::Config::set_option("unattended-install".into(), "");
     std::process::exit(0);
 }
 
 #[inline]
+/// 兼容旧版本的安装函数，默认不创建桌面快捷方式
+/// 参考：调用带参数的版本，保持向后兼容性
+pub fn goto_install() {
+    goto_install(false);
+}
+
+#[inline]
+/// 安装函数，支持无人值守模式检测
+/// 参数：
+/// - _options: 安装选项字符串
+/// - _path: 安装路径
+/// - _silent: 静默安装标志
+/// - _debug: 调试模式标志
+/// 参考：通过检测 unattended-install 标志强制显示安装界面
 pub fn install_me(_options: String, _path: String, _silent: bool, _debug: bool) {
     #[cfg(windows)]
     std::thread::spawn(move || {
-        allow_err!(crate::platform::windows::install_me(
-            &_options, _path, _silent, _debug
-        ));
+        // 检测是否为无人值守安装模式
+        let unattended = config::Config::get_option("unattended-install") == "true";
+        // 如果是无人值守模式，强制显示安装界面
+        let silent = if unattended { false } else { _silent };
+        // 调用实际安装函数
+        allow_err!(crate::platform::windows::install_me(&_options, _path, silent, _debug));
+        // 清除无人值守安装标志
+        config::Config::set_option("unattended-install".into(), "");
         std::process::exit(0);
     });
 }
 
 #[inline]
+/// 无人值守更新函数，支持控制是否创建桌面快捷方式
+/// 参数：
+/// - _path: 更新包路径，为空则使用默认路径
+/// - desktop_shortcut: true 表示创建桌面和开始菜单快捷方式，false 表示仅创建开始菜单快捷方式
+/// 参考：通过设置 unattended-install 标志实现自动点击安装按钮
+pub fn update_me(_path: String, desktop_shortcut: bool) {
+    // 设置无人值守更新标志，用于UI自动点击安装按钮
+    config::Config::set_option("unattended-install".into(), "true");
+    // 处理更新包路径
+    let path = if _path.is_empty() { "".to_owned() } else { _path };
+    // 根据参数选择快捷方式选项
+    let options = if desktop_shortcut { "desktopicon startmenu" } else { "startmenu" };
+    // 调用安装函数，silent=false表示显示安装界面
+    #[cfg(windows)]
+    allow_err!(crate::platform::windows::install_me(options, path, false, false));
+    // 清除无人值守更新标志
+    config::Config::set_option("unattended-install".into(), "");
+    std::process::exit(0);
+}
+
+#[inline]
+/// 兼容旧版本的更新函数，默认不创建桌面快捷方式
+/// 参考：调用带参数的版本，保持向后兼容性
 pub fn update_me(_path: String) {
-    goto_install();
+    update_me(_path, false);
 }
 
 #[inline]
