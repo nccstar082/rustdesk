@@ -39,8 +39,7 @@ env:
   # 2. Update the `VCPKG_COMMIT_ID` in `ci.yml` and `playground.yml`.
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
   ARMV7_VCPKG_COMMIT_ID: "6f29f12e82a8293156836ad81cc9bf5af41fe836" # 2025.01.13, got "/opt/artifacts/vcpkg/vcpkg: No such file or directory" with latest version
-  VERSION: "${{ inputs.upload-tag }}"
-  RUSTDESK_VERSION: "${{ inputs.upload-tag }}"
+  VERSION: "1.4.4"
   NDK_VERSION: "r27c"
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
@@ -168,34 +167,7 @@ jobs:
         run: |
           # Windows: build RustDesk
           python3 .\build.py --portable --hwcodec --flutter --vram --skip-portable-pack
-          
-          # Debug: Check if Flutter build directory exists and list contents
-          if [ -d "./flutter/build/windows/x64/runner/Release" ]; then
-            echo "Flutter build directory exists, listing contents:"
-            ls -la ./flutter/build/windows/x64/runner/Release/
-          else
-            echo "Flutter build directory does not exist, checking parent directories:"
-            ls -la ./flutter/
-            ls -la ./flutter/build/
-            ls -la ./flutter/build/windows/
-            ls -la ./flutter/build/windows/x64/
-            ls -la ./flutter/build/windows/x64/runner/
-          fi
-          
-          # Check if build.py completed successfully
-          echo "Build.py exit code: $?"
-          
-          # Check if Flutter build directory exists using standard path format
-          flutter_build_dir="./flutter/build/windows/x64/runner/Release"
-          if [ -d "$flutter_build_dir" ]; then
-            echo "Flutter build directory found, moving to rustdesk..."
-            mv "$flutter_build_dir" ./rustdesk
-          else
-            echo "ERROR: Flutter build directory not found at $flutter_build_dir"
-            # List all directories to debug
-            find ./flutter -type d | sort
-            exit 1
-          fi
+          mv ./flutter/build/windows/x64/runner/Release ./rustdesk
 
           # Download usbmmidd_v2.zip and extract it to ./rustdesk
           Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
