@@ -948,7 +948,13 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
     let response_url = resp.url;
     let latest_release_version = response_url.rsplit('/').next().unwrap_or_default();
 
-    if get_version_number(&latest_release_version) > get_version_number(crate::VERSION) {
+    #[cfg(target_os = "windows")]
+    let current_version = crate::VERSION_WINDOWS;
+    
+    #[cfg(not(target_os = "windows"))]
+    let current_version = crate::VERSION;
+    
+    if get_version_number(&latest_release_version) > get_version_number(current_version) {
         #[cfg(feature = "flutter")]
         {
             let mut m = HashMap::new();
