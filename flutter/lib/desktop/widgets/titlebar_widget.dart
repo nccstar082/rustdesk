@@ -20,7 +20,19 @@ class DesktopTitleBar extends StatelessWidget {
             stops: [0.0, 1.0]),
       ),
       child: Row(
-        children: [
+        children: [ 
+        // 左侧自定义文字（添加此行）
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 8.0), // 增加左右间距
+          child: Text(
+            "1.4.4-1111", // 替换为你的文字
+            style: TextStyle(
+              color: Colors.white, // 文字颜色（与标题栏背景对比）
+              fontSize: 14,
+            ),
+          ),
+        ),
+        // 原有内容（保持不变）
           Expanded(
             child: child ?? Offstage(),
           )
