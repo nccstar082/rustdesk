@@ -134,12 +134,23 @@ fn check_update(manually: bool) -> ResultType<()> {
     if update_url.is_empty() {
         log::debug!("No update available.");
     } else {
-        let download_url = update_url.replace("tag", "download");
+        // 处理URL，确保不会生成重复的路径片段
+        let download_url = if update_url.contains("tag") {
+            update_url.replace("tag", "download")
+        } else {
+            update_url.clone()
+        };
         // 优先使用JSON中的版本号，如果为空则从URL中提取
         let version = if !update_version.is_empty() {
             update_version.clone()
         } else {
-            download_url.split('/').last().unwrap_or_default().to_string()
+            // 从URL中提取版本号，避免包含完整的文件名
+            let parts: Vec<&str> = download_url.split('/').collect();
+            if parts.len() > 2 {
+                parts[parts.len() - 2].to_string()
+            } else {
+                download_url.split('/').last().unwrap_or_default().to_string()
+            }
         };
         #[cfg(target_os = "windows")]
         let download_url = if !update_exe.is_empty() {
@@ -148,7 +159,9 @@ fn check_update(manually: bool) -> ResultType<()> {
                 // download_url已经是一个完整的URL，包含了文件名
                 download_url
             } else {
-                format!("{}/{}", download_url, update_exe)
+                // 确保update_exe不包含路径前缀，只保留文件名
+                let exe_filename = update_exe.split('/').last().unwrap_or(&update_exe);
+                format!("{}/{}", download_url, exe_filename)
             }
         } else if cfg!(feature = "flutter") {
             if download_url.ends_with(".exe") || download_url.ends_with(".msi") {
@@ -273,6 +286,26 @@ fn update_new_version(is_msi: bool, version: &str, file_path: &PathBuf) {
 }
 
 pub fn get_download_file_from_url(url: &str) -> Option<PathBuf> {
-    let filename = url.split('/').last()?;
+    // 清理URL，移除重复的文件名部分
+    let mut filename = url.split('/').last()?;
+    // 检查并修复重复的文件名后缀
+    if filename.contains("-x86_64.exe-x86_64.exe") {
+        filename = filename.replace("-x86_64.exe-x86_64.exe", "-x86_64.exe");
+    } else if filename.contains("rustdesk-rustdesk-") {
+        filename = filename.replace("rustdesk-rustdesk-", "rustdesk-");
+    }
+    #[cfg(target_os = "android")]
+    {
+        // 在Android上，将更新文件存储在外部存储的Download目录中
+        // 这样系统安装程序可以访问它
+        let mut path = PathBuf::new();
+        if let Some(external_storage) = std::env::var_os("EXTERNAL_STORAGE") {
+            path.push(external_storage);
+            path.push("Download");
+            path.push(filename);
+            return Some(path);
+        }
+    }
+    // 其他平台使用系统临时目录
     Some(std::env::temp_dir().join(filename))
 }
