@@ -128,7 +128,6 @@ class PlatformFFI {
     };
     context.callMethod('init');
     version = getByName('version');
-	displayVersion = getByName('display_update_version'); // 1.4.4-1
     window.onContextMenu.listen((event) {
       event.preventDefault();
     });

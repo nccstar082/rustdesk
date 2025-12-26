@@ -740,9 +740,6 @@ pub fn get_new_version() -> String {
 
 #[inline]
 pub fn get_version() -> String {
-    #[cfg(target_os = "windows")]
-    return crate::VERSION_WINDOWS.to_owned();
-    
     crate::VERSION.to_owned()
 }
 
