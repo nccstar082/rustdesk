@@ -23,7 +23,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::common::SOFTWARE_UPDATE_URL;
+use crate::common::{SOFTWARE_UPDATE_URL, SOFTWARE_UPDATE_VERSION};
 #[cfg(feature = "flutter")]
 use crate::hbbs_http::account;
 #[cfg(not(any(target_os = "ios")))]
@@ -737,6 +737,7 @@ pub fn get_version() -> String {
     #[cfg(target_os = "windows")]
     return crate::VERSION_WINDOWS.to_owned();
     
+    #[cfg(not(target_os = "windows"))]
     crate::VERSION.to_owned()
 }
 
