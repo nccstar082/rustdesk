@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_hbb/models/platform_model.dart';
 
 const sidebarColor = Color(0xFF0C6AF6);
 const backgroundStartColor = Color(0xFF0583EA);
@@ -22,7 +23,21 @@ class DesktopTitleBar extends StatelessWidget {
       child: Row(
         children: [
           Expanded(
-            child: child ?? Offstage(),
+            child: child ?? FutureBuilder<String>(
+              future: bind.mainGetVersion(),
+              builder: (context, snapshot) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  child: Text(
+                    snapshot.data ?? '',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                    ),
+                  ),
+                );
+              },
+            ),
           )
         ],
       ),
