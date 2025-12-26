@@ -296,6 +296,18 @@ class ConnectionManagerState extends State<ConnectionManager>
               },
               child: Container(
                 color: Theme.of(context).colorScheme.background,
+                child: FutureBuilder<String>(
+                  future: bind.mainGetVersion(),
+                  builder: (context, snapshot) {
+                    return Padding(
+                      padding: const EdgeInsets.only(left: 8.0),
+                      child: Text(
+                        '${bind.mainGetAppNameSync()} ${snapshot.data ?? ''}',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                    );
+                  },
+                ),
               ),
             ),
           ),
