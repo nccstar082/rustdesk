@@ -143,17 +143,32 @@ fn check_update(manually: bool) -> ResultType<()> {
         };
         #[cfg(target_os = "windows")]
         let download_url = if !update_exe.is_empty() {
-            // 如果JSON中提供了exe文件名，则直接使用
-            format!("{}/{}", download_url, update_exe)
+            // 如果JSON中提供了exe文件名，并且download_url不已经包含文件名，则使用
+            if download_url.ends_with(".exe") || download_url.ends_with(".msi") {
+                // download_url已经是一个完整的URL，包含了文件名
+                download_url
+            } else {
+                format!("{}/{}", download_url, update_exe)
+            }
         } else if cfg!(feature = "flutter") {
-            format!(
-                "{}/rustdesk-{}-x86_64.{}",
-                download_url,
-                version,
-                if is_msi { "msi" } else { "exe" }
-            )
+            if download_url.ends_with(".exe") || download_url.ends_with(".msi") {
+                // download_url已经是一个完整的URL，包含了文件名
+                download_url
+            } else {
+                format!(
+                    "{}/rustdesk-{}-x86_64.{}",
+                    download_url,
+                    version,
+                    if is_msi { "msi" } else { "exe" }
+                )
+            }
         } else {
-            format!("{}/rustdesk-{}-x86-sciter.exe", download_url, version)
+            if download_url.ends_with(".exe") || download_url.ends_with(".msi") {
+                // download_url已经是一个完整的URL，包含了文件名
+                download_url
+            } else {
+                format!("{}/rustdesk-{}-x86-sciter.exe", download_url, version)
+            }
         };
         log::debug!("New version available: {}", &version);
         let client = create_http_client_with_url(&download_url);
