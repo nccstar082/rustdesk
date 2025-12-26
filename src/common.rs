@@ -952,7 +952,20 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
     let latest_release_version = if !resp.version.is_empty() {
         resp.version.clone()
     } else {
-        response_url.rsplit('/').next().unwrap_or_default().to_string()
+        // 从URL中提取版本号，确保只获取版本号而不是完整文件名
+        let last_segment = response_url.rsplit('/').next().unwrap_or_default();
+        // 移除文件名前缀和后缀，只保留版本号部分
+        let version = if last_segment.starts_with("rustdesk-") {
+            let mut version_part = last_segment.trim_start_matches("rustdesk-");
+            // 移除平台和架构信息
+            version_part = version_part.split('-').next().unwrap_or(version_part);
+            // 保留完整的版本号（已经通过split('-')移除了平台和架构信息）
+            version_part.to_string()
+        } else {
+            // 如果不是rustdesk文件名格式，直接使用最后一个路径段
+            last_segment.to_string()
+        };
+        version
     };
 
     #[cfg(target_os = "windows")]
@@ -967,6 +980,12 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
             let mut m = HashMap::new();
             m.insert("name", "check_software_update_finish");
             m.insert("url", &response_url);
+            // 获取本地文件路径并传递给Flutter层
+            if let Some(local_path) = crate::updater::get_download_file_from_url(&response_url) {
+                if let Some(path_str) = local_path.to_str() {
+                    m.insert("local_path", path_str);
+                }
+            }
             if let Ok(data) = serde_json::to_string(&m) {
                 let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, data);
             }
