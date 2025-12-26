@@ -81,6 +81,8 @@ pub mod input {
 
 lazy_static::lazy_static! {
     pub static ref SOFTWARE_UPDATE_URL: Arc<Mutex<String>> = Default::default();
+    pub static ref SOFTWARE_UPDATE_VERSION: Arc<Mutex<String>> = Default::default();
+    pub static ref SOFTWARE_UPDATE_EXE: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_ID: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_NAME: Arc<Mutex<String>> = Default::default();
     static ref PUBLIC_IPV6_ADDR: Arc<Mutex<(Option<SocketAddr>, Option<Instant>)>> = Default::default();
@@ -946,7 +948,12 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
     let bytes = latest_release_response.bytes().await?;
     let resp: hbb_common::VersionCheckResponse = serde_json::from_slice(&bytes)?;
     let response_url = resp.url;
-    let latest_release_version = response_url.rsplit('/').next().unwrap_or_default();
+    // 优先使用JSON中的version字段，如果为空则从URL中提取
+    let latest_release_version = if !resp.version.is_empty() {
+        resp.version.clone()
+    } else {
+        response_url.rsplit('/').next().unwrap_or_default().to_string()
+    };
 
     #[cfg(target_os = "windows")]
     let current_version = crate::VERSION_WINDOWS;
@@ -965,8 +972,12 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
             }
         }
         *SOFTWARE_UPDATE_URL.lock().unwrap() = response_url;
+        *SOFTWARE_UPDATE_VERSION.lock().unwrap() = latest_release_version;
+        *SOFTWARE_UPDATE_EXE.lock().unwrap() = resp.exe;
     } else {
         *SOFTWARE_UPDATE_URL.lock().unwrap() = "".to_string();
+        *SOFTWARE_UPDATE_VERSION.lock().unwrap() = "".to_string();
+        *SOFTWARE_UPDATE_EXE.lock().unwrap() = "".to_string();
     }
     Ok(())
 }

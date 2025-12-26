@@ -129,13 +129,23 @@ fn check_update(manually: bool) -> ResultType<()> {
     }
 
     let update_url = crate::common::SOFTWARE_UPDATE_URL.lock().unwrap().clone();
+    let update_version = crate::common::SOFTWARE_UPDATE_VERSION.lock().unwrap().clone();
+    let update_exe = crate::common::SOFTWARE_UPDATE_EXE.lock().unwrap().clone();
     if update_url.is_empty() {
         log::debug!("No update available.");
     } else {
         let download_url = update_url.replace("tag", "download");
-        let version = download_url.split('/').last().unwrap_or_default();
+        // 优先使用JSON中的版本号，如果为空则从URL中提取
+        let version = if !update_version.is_empty() {
+            update_version.clone()
+        } else {
+            download_url.split('/').last().unwrap_or_default().to_string()
+        };
         #[cfg(target_os = "windows")]
-        let download_url = if cfg!(feature = "flutter") {
+        let download_url = if !update_exe.is_empty() {
+            // 如果JSON中提供了exe文件名，则直接使用
+            format!("{}/{}", download_url, update_exe)
+        } else if cfg!(feature = "flutter") {
             format!(
                 "{}/rustdesk-{}-x86_64.{}",
                 download_url,
