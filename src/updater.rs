@@ -152,7 +152,6 @@ fn check_update(manually: bool) -> ResultType<()> {
                 download_url.split('/').last().unwrap_or_default().to_string()
             }
         };
-        #[cfg(target_os = "windows")]
         let download_url = if !update_exe.is_empty() {
             // 如果JSON中提供了exe文件名，并且download_url不已经包含文件名，则使用
             if download_url.ends_with(".exe") || download_url.ends_with(".msi") {
@@ -163,24 +162,19 @@ fn check_update(manually: bool) -> ResultType<()> {
                 let exe_filename = update_exe.split('/').last().unwrap_or(&update_exe);
                 format!("{}/{}", download_url, exe_filename)
             }
-        } else if cfg!(feature = "flutter") {
-            if download_url.ends_with(".exe") || download_url.ends_with(".msi") {
-                // download_url已经是一个完整的URL，包含了文件名
-                download_url
-            } else {
-                format!(
-                    "{}/rustdesk-{}-x86_64.{}",
-                    download_url,
-                    version,
-                    if is_msi { "msi" } else { "exe" }
-                )
-            }
         } else {
             if download_url.ends_with(".exe") || download_url.ends_with(".msi") {
                 // download_url已经是一个完整的URL，包含了文件名
                 download_url
             } else {
-                format!("{}/rustdesk-{}-x86-sciter.exe", download_url, version)
+                #[cfg(all(target_os = "windows", feature = "flutter"))]
+                let extension = if is_msi { "msi" } else { "exe" };
+                #[cfg(all(target_os = "windows", not(feature = "flutter")))]
+                let extension = "exe";
+                #[cfg(not(target_os = "windows"))]
+                let extension = "tar.gz";
+                
+                format!("{}/rustdesk-{}-x86_64.{}", download_url, version, extension)
             }
         };
         log::debug!("New version available: {}", &version);
@@ -287,7 +281,7 @@ fn update_new_version(is_msi: bool, version: &str, file_path: &PathBuf) {
 
 pub fn get_download_file_from_url(url: &str) -> Option<PathBuf> {
     // 清理URL，移除重复的文件名部分
-    let mut filename = url.split('/').last()?;
+    let mut filename = url.split('/').last()?.to_string();
     // 检查并修复重复的文件名后缀
     if filename.contains("-x86_64.exe-x86_64.exe") {
         filename = filename.replace("-x86_64.exe-x86_64.exe", "-x86_64.exe");
