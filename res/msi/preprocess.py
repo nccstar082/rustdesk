@@ -14,8 +14,8 @@ from itertools import chain
 import shutil
 
 g_indent_unit = "\t"
-g_version = ""
-g_original_version = ""  # 新增：保存原始完整版本号（含-后缀）
+g_version = ""  # 保留原始带后缀的版本号（1.4.4-5），供软件内部使用
+g_msi_version = ""  # 新增：仅用于MSI编译的A.B.C格式版本号
 g_build_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
 # Replace the following links with your own in the custom arp properties.
@@ -157,7 +157,8 @@ def gen_pre_vars(args, dist_dir):
 
         indent = g_indent_unit * 1
         to_insert_lines = [
-            f'{indent}<?define Version="{g_version}" ?>\n',
+            # 关键修改：MSI编译用g_msi_version，其余不变
+            f'{indent}<?define Version="{g_msi_version}" ?>\n',
             f'{indent}<?define Manufacturer="{args.manufacturer}" ?>\n',
             f'{indent}<?define Product="{args.app_name}" ?>\n',
             f'{indent}<?define Description="{args.app_name} Installer" ?>\n',
@@ -204,8 +205,7 @@ def replace_app_name_in_custom_actions(app_name):
 
 def gen_upgrade_info():
     def func(lines, index_start):
-        indent = g_indent_unit * 3
-
+        # 关键修改：升级检测用原始版本号g_version的主版本，保证升级逻辑不变
         vs = g_version.split(".")
         major = vs[0]
         upgrade_id = uuid.uuid4()
@@ -317,8 +317,9 @@ def gen_custom_ARPSYSTEMCOMPONENT_True(args, dist_dir):
         lines_new.append(
             f'{indent}<RegistryValue Type="string" Name="DisplayIcon" Value="[INSTALLFOLDER_INNER]{args.app_name}.exe" />\n'
         )
+        # 关键修改：软件展示的版本号用原始的g_version（1.4.4-5），不是处理后的
         lines_new.append(
-            f'{indent}<RegistryValue Type="string" Name="DisplayVersion" Value="{g_original_version}" />\n'  # 修改：用原始完整版本号
+            f'{indent}<RegistryValue Type="string" Name="DisplayVersion" Value="{g_version}" />\n'
         )
         lines_new.append(
             f'{indent}<RegistryValue Type="string" Name="Publisher" Value="{args.manufacturer}" />\n'
@@ -355,10 +356,11 @@ def gen_custom_ARPSYSTEMCOMPONENT_True(args, dist_dir):
             f'{indent}<RegistryValue Type="expandable" Name="QuietUninstallString" Value="MsiExec.exe /qn /X [ProductCode]" />\n'
         )
 
+        # 关键修改：版本号解析用原始g_version，保证软件内部版本逻辑不变
         vs = g_version.split(".")
-        major, minor, build = vs[0], vs[1], vs[2]
+        major, minor, build = vs[0], vs[1], vs[2].split("-")[0] if "-" in vs[2] else vs[2]
         lines_new.append(
-            f'{indent}<RegistryValue Type="string" Name="Version" Value="{g_original_version}" />\n'  # 修改：用原始完整版本号
+            f'{indent}<RegistryValue Type="string" Name="Version" Value="{g_version}" />\n'
         )
         lines_new.append(
             f'{indent}<RegistryValue Type="integer" Name="VersionMajor" Value="{major}" />\n'
@@ -375,7 +377,7 @@ def gen_custom_ARPSYSTEMCOMPONENT_True(args, dist_dir):
         )
         for k, v in g_arpsystemcomponent.items():
             if "v" in v:
-                t = v["t"] if "t" in v else "string"
+                t = v["t"] if "t" in v is None else "string"
                 lines_new.append(
                     f'{indent}<RegistryValue Type="{t}" Name="{k}" Value="{v["v"]}" />\n'
                 )
@@ -391,6 +393,19 @@ def gen_custom_ARPSYSTEMCOMPONENT_True(args, dist_dir):
         func,
     )
 
+
+def gen_custom_ARPSYSTEMCOMPONENT(args, dist_dir):
+    try:
+        custom_arp = json.loads(args.custom_arp)
+        g_arpsystemcomponent.update(custom_arp)
+    except json.JSONDecodeError as e:
+        print(f"Failed to decode custom arp: {e}")
+        return False
+
+    if args.arp:
+        return gen_custom_ARPSYSTEMCOMPONENT_True(args, dist_dir)
+    else:
+        return gen_custom_ARPSYSTEMCOMPONENT_False(args)
 
 def gen_conn_type(args):
     def func(lines, index_start):
@@ -454,27 +469,31 @@ def init_global_vars(dist_dir, app_name, args):
         return output.decode("utf-8").strip()
 
     global g_version
-    global g_original_version  # 新增：声明使用全局原始版本号变量
+    global g_msi_version  # 声明使用新增的MSI专用版本号
     global g_build_date
-    # 为MSI兼容性处理：MSI要求版本号只能是A.B.C格式，不能包含-后缀
-    # 因此在处理版本号之前，先移除-及其后面的部分
-    # 原代码：g_version = args.version.replace("-", ".")
-    # 原代码问题：将-替换为.会导致版本号格式错误（如1.4.4-1变成1.4.4.1，不符合MSI要求）
-    # 新代码作用：移除-及其后面的部分，确保MSI使用正确的A.B.C格式版本号
-    g_original_version = args.version  # 新增：保存原始完整版本号（含-后缀）
-    g_version = args.version.split("-")[0]  # 保留MSI编译用的处理后版本号
+    
+    # 1. g_version：保留原始带后缀的版本号（供软件内部使用）
+    g_version = args.version if args.version else ""
     if g_version == "":
         g_version = read_process_output("--version")
-        g_original_version = g_version  # 新增：兜底逻辑，保证原始版本号有值
+    
+    # 2. g_msi_version：处理为A.B.C格式（仅用于MSI编译）
+    g_msi_version = g_version.split("-")[0]
+    # 补充：如果MSI版本号不足3段，补0（避免MSI编译报错）
+    while g_msi_version.count(".") < 2:
+        g_msi_version += ".0"
+
+    # 校验原始版本号格式（保证软件内部逻辑正常）
     version_pattern = re.compile(r"\d+\.\d+\.\d+.*")
     if not version_pattern.match(g_version):
         print(f"Error: version {g_version} not found in {dist_app}")
         return False
-    if g_version.count(".") == 2:
-        # https://github.com/dotnet/runtime/blob/5535e31a712343a63f5d7d796cd874e563e5ac14/src/libraries/System.Private.CoreLib/src/System/Version.cs
+    
+    # 仅对MSI版本号拼接修订版本（不影响原始版本号）
+    if g_msi_version.count(".") == 2:
         if args.revision_version < 0 or args.revision_version > 2147483647:
             raise ValueError(f"Invalid revision version: {args.revision_version}")    
-        g_version = f"{g_version}.{args.revision_version}"
+        g_msi_version = f"{g_msi_version}.{args.revision_version}"
 
     g_build_date = read_process_output("--build-date")
     build_date_pattern = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}")
