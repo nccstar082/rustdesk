@@ -97,8 +97,8 @@ class _DesktopTabPageState extends State<DesktopTabPage> {
             body: DesktopTab(
               controller: tabController,
               tail: Offstage(
-                offstage: bind.isIncomingOnly() || bind.isIncomingOnly()|| bind.isDisableSettings()
-				//offstage: true, // offstage: bind.isIncomingOnly()|| bind.isDisableSettings()
+                offstage: bind.isIncomingOnly() || bind.isDisableSettings(),  // 这行是显示
+				//offstage: true, // 这行是隐藏
                 child: ActionIcon(
                   message: 'Settings',
                   icon: IconFont.menu,
