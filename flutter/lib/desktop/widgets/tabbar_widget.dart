@@ -653,7 +653,7 @@ class _DesktopTabState extends State<DesktopTab>
                         child: const SizedBox(
                           width: 78,
                         )),
-                    // 关键修改：Windows/Linux强制显示标题区域，macOS保留原隐藏逻辑
+                    // 关键修改：替换为原生FutureBuilder，解决参数不匹配问题
                     Offstage(
                       offstage: isMacOS, // 仅macOS隐藏，Windows/Linux显示
                       child: Row(children: [
@@ -663,33 +663,33 @@ class _DesktopTabState extends State<DesktopTab>
                         ),
                         Offstage(
                           offstage: !showTitle,
-                          child: futureBuilder(
-                            future: _versionFuture, // 使用缓存的Future
-                            hasData: (version) {
+                          // 核心修复：替换自定义futureBuilder为原生FutureBuilder
+                          child: FutureBuilder<String>(
+                            future: _versionFuture, // 保留缓存的版本号Future
+                            builder: (context, snapshot) {
+                              String displayText;
+                              // 处理加载状态
+                              if (snapshot.connectionState == ConnectionState.waiting) {
+                                displayText = "RustDesk-Loading";
+                              }
+                              // 处理错误状态
+                              else if (snapshot.hasError) {
+                                displayText = "RustDesk-Unknown";
+                              }
+                              // 处理成功状态
+                              else {
+                                final version = snapshot.data ?? "Unknown";
+                                displayText = "RustDesk-$version";
+                              }
+                              // 保留字符间距等样式
                               return Text(
-                                "RustDesk-$version",
+                                displayText,
                                 style: TextStyle(
                                   fontSize: 13,
                                   letterSpacing: -0.5, // 减少字符间距，使显示更紧凑
                                 ),
                               ).marginOnly(left: 2);
                             },
-                            // 新增：加载中显示占位
-                            loading: () => Text(
-                              "RustDesk-Loading",
-                              style: TextStyle(
-                                fontSize: 13,
-                                letterSpacing: -0.5, // 减少字符间距，使显示更紧凑
-                              ),
-                            ).marginOnly(left: 2),
-                            // 新增：加载失败显示兜底
-                            error: (e) => Text(
-                              "RustDesk-Unknown",
-                              style: TextStyle(
-                                fontSize: 13,
-                                letterSpacing: -0.5, // 减少字符间距，使显示更紧凑
-                              ),
-                            ).marginOnly(left: 2),
                           )
                         )
                       ]).marginOnly(
