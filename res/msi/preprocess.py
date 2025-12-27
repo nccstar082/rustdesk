@@ -15,6 +15,7 @@ import shutil
 
 g_indent_unit = "\t"
 g_version = ""
+g_original_version = ""  # 新增：保存原始完整版本号（含-后缀）
 g_build_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
 # Replace the following links with your own in the custom arp properties.
@@ -317,7 +318,7 @@ def gen_custom_ARPSYSTEMCOMPONENT_True(args, dist_dir):
             f'{indent}<RegistryValue Type="string" Name="DisplayIcon" Value="[INSTALLFOLDER_INNER]{args.app_name}.exe" />\n'
         )
         lines_new.append(
-            f'{indent}<RegistryValue Type="string" Name="DisplayVersion" Value="{g_version}" />\n'
+            f'{indent}<RegistryValue Type="string" Name="DisplayVersion" Value="{g_original_version}" />\n'  # 修改：用原始完整版本号
         )
         lines_new.append(
             f'{indent}<RegistryValue Type="string" Name="Publisher" Value="{args.manufacturer}" />\n'
@@ -357,7 +358,7 @@ def gen_custom_ARPSYSTEMCOMPONENT_True(args, dist_dir):
         vs = g_version.split(".")
         major, minor, build = vs[0], vs[1], vs[2]
         lines_new.append(
-            f'{indent}<RegistryValue Type="string" Name="Version" Value="{g_version}" />\n'
+            f'{indent}<RegistryValue Type="string" Name="Version" Value="{g_original_version}" />\n'  # 修改：用原始完整版本号
         )
         lines_new.append(
             f'{indent}<RegistryValue Type="integer" Name="VersionMajor" Value="{major}" />\n'
@@ -374,7 +375,7 @@ def gen_custom_ARPSYSTEMCOMPONENT_True(args, dist_dir):
         )
         for k, v in g_arpsystemcomponent.items():
             if "v" in v:
-                t = v["t"] if "t" in v is None else "string"
+                t = v["t"] if "t" in v else "string"
                 lines_new.append(
                     f'{indent}<RegistryValue Type="{t}" Name="{k}" Value="{v["v"]}" />\n'
                 )
@@ -390,19 +391,6 @@ def gen_custom_ARPSYSTEMCOMPONENT_True(args, dist_dir):
         func,
     )
 
-
-def gen_custom_ARPSYSTEMCOMPONENT(args, dist_dir):
-    try:
-        custom_arp = json.loads(args.custom_arp)
-        g_arpsystemcomponent.update(custom_arp)
-    except json.JSONDecodeError as e:
-        print(f"Failed to decode custom arp: {e}")
-        return False
-
-    if args.arp:
-        return gen_custom_ARPSYSTEMCOMPONENT_True(args, dist_dir)
-    else:
-        return gen_custom_ARPSYSTEMCOMPONENT_False(args)
 
 def gen_conn_type(args):
     def func(lines, index_start):
@@ -466,15 +454,18 @@ def init_global_vars(dist_dir, app_name, args):
         return output.decode("utf-8").strip()
 
     global g_version
+    global g_original_version  # 新增：声明使用全局原始版本号变量
     global g_build_date
     # 为MSI兼容性处理：MSI要求版本号只能是A.B.C格式，不能包含-后缀
     # 因此在处理版本号之前，先移除-及其后面的部分
     # 原代码：g_version = args.version.replace("-", ".")
     # 原代码问题：将-替换为.会导致版本号格式错误（如1.4.4-1变成1.4.4.1，不符合MSI要求）
     # 新代码作用：移除-及其后面的部分，确保MSI使用正确的A.B.C格式版本号
-    g_version = args.version.split("-")[0]
+    g_original_version = args.version  # 新增：保存原始完整版本号（含-后缀）
+    g_version = args.version.split("-")[0]  # 保留MSI编译用的处理后版本号
     if g_version == "":
         g_version = read_process_output("--version")
+        g_original_version = g_version  # 新增：兜底逻辑，保证原始版本号有值
     version_pattern = re.compile(r"\d+\.\d+\.\d+.*")
     if not version_pattern.match(g_version):
         print(f"Error: version {g_version} not found in {dist_app}")
