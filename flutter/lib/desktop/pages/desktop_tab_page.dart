@@ -96,6 +96,7 @@ class _DesktopTabPageState extends State<DesktopTabPage> {
             backgroundColor: Theme.of(context).colorScheme.background,
             body: DesktopTab(
               controller: tabController,
+			  showTitle: true, // 显式设置为true，显示标题栏和版本号
               tail: Offstage(
                 offstage: bind.isIncomingOnly() || bind.isDisableSettings(),  // 这行是显示
 				//offstage: true, // 这行是隐藏

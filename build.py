@@ -29,8 +29,17 @@ skip_cargo = False
 def get_deb_arch() -> str:
     custom_arch = os.environ.get("DEB_ARCH")
     if custom_arch is None:
-        return "amd64"
-    return custom_arch
+        arch = "amd64"
+    else:
+        arch = custom_arch
+    
+    # 核心优化：映射Debian架构名到GitHub Actions常用名（解决x86_64/amd64命名不一致）
+    arch_mapping = {
+        "amd64": "x86_64",
+        "armhf": "armv7l",
+        "arm64": "aarch64"
+    }
+    return arch_mapping.get(arch, arch)
 
 def get_deb_extra_depends() -> str:
     custom_arch = os.environ.get("DEB_ARCH")
@@ -289,6 +298,8 @@ def get_features(args):
 
 
 def generate_control_file(version):
+    # 核心优化：统一control文件的Version字段为截取后的版本号（文件名和control版本一致）
+    clean_version = version.split('-')[0]
     control_file_path = "../res/DEBIAN/control"
     system2('/bin/rm -rf %s' % control_file_path)
 
@@ -303,7 +314,7 @@ Depends: libgtk-3-0, libxcb-randr0, libxdo3, libxfixes3, libxcb-shape0, libxcb-x
 Recommends: libayatana-appindicator3-1
 Description: A remote control software.
 
-""" % (version, get_deb_arch(), get_deb_extra_depends())
+""" % (clean_version, get_deb_arch(), get_deb_extra_depends())
     file = open(control_file_path, "w")
     file.write(content)
     file.close()
@@ -360,7 +371,10 @@ def build_flutter_deb(version, features):
 
     system2('/bin/rm -rf tmpdeb/')
     system2('/bin/rm -rf ../res/DEBIAN/control')
-    os.rename('rustdesk.deb', '../rustdesk-%s.deb' % version)
+    # 生成文件名时移除版本号中的-后缀，并添加架构后缀，以符合GitHub Actions的预期格式
+    filename_version = version.split('-')[0]
+    arch = get_deb_arch()
+    os.rename('rustdesk.deb', '../rustdesk-%s-%s.deb' % (filename_version, arch))
     os.chdir("..")
 
 
@@ -397,7 +411,10 @@ def build_deb_from_folder(version, binary_folder):
 
     system2('/bin/rm -rf tmpdeb/')
     system2('/bin/rm -rf ../res/DEBIAN/control')
-    os.rename('rustdesk.deb', '../rustdesk-%s.deb' % version)
+    # 核心优化：补全架构后缀，与其他Linux deb生成逻辑命名统一
+    filename_version = version.split('-')[0]
+    arch = get_deb_arch()
+    os.rename('rustdesk.deb', '../rustdesk-%s-%s.deb' % (filename_version, arch))
     os.chdir("..")
 
 
@@ -628,7 +645,10 @@ def main():
                 system2('cp libsciter-gtk.so tmpdeb/usr/share/rustdesk/')
                 md5_file_folder("tmpdeb/")
                 system2('dpkg-deb -b tmpdeb rustdesk.deb; /bin/rm -rf tmpdeb/')
-                os.rename('rustdesk.deb', 'rustdesk-%s.deb' % version)
+                # 生成文件名时移除版本号中的-后缀，并添加架构后缀
+                filename_version = version.split('-')[0]
+                arch = get_deb_arch()
+                os.rename('rustdesk.deb', 'rustdesk-%s-%s.deb' % (filename_version, arch))
 
 
 def md5_file(fn):

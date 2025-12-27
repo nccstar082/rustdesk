@@ -262,7 +262,7 @@ class DesktopTab extends StatefulWidget {
     Key? key,
     required this.controller,
     this.showLogo = true,
-    this.showTitle = false,
+    this.showTitle = false, // 保留默认值，由调用处控制（desktop_tab_page已设为true）
     this.showMinimize = true,
     this.showMaximize = true,
     this.showClose = true,
@@ -294,6 +294,9 @@ class _DesktopTabState extends State<DesktopTab>
     with MultiWindowListener, WindowListener {
   Timer? _macOSCheckRestoreTimer;
   int _macOSCheckRestoreCounter = 0;
+  // 缓存版本号Future，避免重复请求
+  late final Future<String> _versionFuture;
+
 
   bool get showLogo => widget.showLogo;
   bool get showTitle => widget.showTitle;
@@ -332,11 +335,30 @@ class _DesktopTabState extends State<DesktopTab>
     return RxString(getDesktopTabLabel(peerId, alias));
   }
 
+
+
+  // 抽离版本获取逻辑，增加失败兜底+mounted判断
+  Future<String> _getVersionWithFallback() async {
+    try {
+      final version = await bind.mainGetVersion();
+      // 防止Widget销毁后调用windowManager
+      if (mounted && isMacOS && isMainWindow) {
+        windowManager.setTitle("RustDesk-$version");
+      }
+      return version;
+    } catch (e) {
+      debugPrint("获取版本号失败: $e");
+      return "Unknown"; // 失败时兜底显示
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     DesktopMultiWindow.addListener(this);
     windowManager.addListener(this);
+    // 只在初始化时执行一次版本号获取，后续重建复用这个Future
+    _versionFuture = _getVersionWithFallback();
 
     Future.delayed(Duration(milliseconds: 500), () {
       if (isMainWindow) {
@@ -631,19 +653,45 @@ class _DesktopTabState extends State<DesktopTab>
                         child: const SizedBox(
                           width: 78,
                         )),
+                    // 关键修改：Windows/Linux强制显示标题区域，macOS保留原隐藏逻辑
                     Offstage(
-                      offstage: kUseCompatibleUiMode || isMacOS,
+                      offstage: isMacOS, // 仅macOS隐藏，Windows/Linux显示
                       child: Row(children: [
                         Offstage(
                           offstage: !showLogo,
                           child: loadIcon(16),
                         ),
                         Offstage(
-                            offstage: !showTitle,
-                            child: const Text(
-                              "RustDesk",
-                              style: TextStyle(fontSize: 13),
-                            ).marginOnly(left: 2))
+                          offstage: !showTitle,
+                          child: futureBuilder(
+                            future: _versionFuture, // 使用缓存的Future
+                            hasData: (version) {
+                              return Text(
+                                "RustDesk-$version",
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  letterSpacing: -0.5, // 减少字符间距，使显示更紧凑
+                                ),
+                              ).marginOnly(left: 2);
+                            },
+                            // 新增：加载中显示占位
+                            loading: () => Text(
+                              "RustDesk-Loading",
+                              style: TextStyle(
+                                fontSize: 13,
+                                letterSpacing: -0.5, // 减少字符间距，使显示更紧凑
+                              ),
+                            ).marginOnly(left: 2),
+                            // 新增：加载失败显示兜底
+                            error: (e) => Text(
+                              "RustDesk-Unknown",
+                              style: TextStyle(
+                                fontSize: 13,
+                                letterSpacing: -0.5, // 减少字符间距，使显示更紧凑
+                              ),
+                            ).marginOnly(left: 2),
+                          )
+                        )
                       ]).marginOnly(
                         left: 5,
                         right: 10,
