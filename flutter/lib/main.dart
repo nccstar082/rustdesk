@@ -38,8 +38,9 @@ WindowType? kWindowType;
 late List<String> kBootArgs;
 
 // 定义窗口尺寸常量（文件顶部）
-const double WINDOW_WIDTH = 220;
-const double WINDOW_HEIGHT = 495;
+const double WINDOW_WIDTH = 800;
+// const double WINDOW_WIDTH = 220;
+const double WINDOW_HEIGHT = 495; 
 const Size WINDOW_SIZE = Size(WINDOW_WIDTH, WINDOW_HEIGHT);
 
 Future<void> main(List<String> args) async {
