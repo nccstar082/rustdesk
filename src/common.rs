@@ -81,8 +81,6 @@ pub mod input {
 
 lazy_static::lazy_static! {
     pub static ref SOFTWARE_UPDATE_URL: Arc<Mutex<String>> = Default::default();
-    pub static ref SOFTWARE_UPDATE_VERSION: Arc<Mutex<String>> = Default::default();
-    pub static ref SOFTWARE_UPDATE_EXE: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_ID: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_NAME: Arc<Mutex<String>> = Default::default();
     static ref PUBLIC_IPV6_ADDR: Arc<Mutex<(Option<SocketAddr>, Option<Instant>)>> = Default::default();
@@ -948,55 +946,21 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
     let bytes = latest_release_response.bytes().await?;
     let resp: hbb_common::VersionCheckResponse = serde_json::from_slice(&bytes)?;
     let response_url = resp.url;
-    // 优先使用JSON中的version字段，如果为空则从URL中提取
-    let latest_release_version = if !resp.version.is_empty() {
-        resp.version.clone()
-    } else {
-        // 从URL中提取版本号，确保只获取版本号而不是完整文件名
-        let last_segment = response_url.rsplit('/').next().unwrap_or_default();
-        // 移除文件名前缀和后缀，只保留版本号部分
-        let version = if last_segment.starts_with("rustdesk-") {
-            let mut version_part = last_segment.trim_start_matches("rustdesk-");
-            // 移除平台和架构信息
-            version_part = version_part.split('-').next().unwrap_or(version_part);
-            // 保留完整的版本号（已经通过split('-')移除了平台和架构信息）
-            version_part.to_string()
-        } else {
-            // 如果不是rustdesk文件名格式，直接使用最后一个路径段
-            last_segment.to_string()
-        };
-        version
-    };
+    let latest_release_version = response_url.rsplit('/').next().unwrap_or_default();
 
-    #[cfg(target_os = "windows")]
-    let current_version = crate::VERSION_WINDOWS;
-    
-    #[cfg(not(target_os = "windows"))]
-    let current_version = crate::VERSION;
-    
-    if get_version_number(&latest_release_version) > get_version_number(current_version) {
+    if get_version_number(&latest_release_version) > get_version_number(crate::VERSION) {
         #[cfg(feature = "flutter")]
         {
             let mut m = HashMap::new();
             m.insert("name", "check_software_update_finish");
             m.insert("url", &response_url);
-            // 获取本地文件路径并传递给Flutter层
-            if let Some(local_path) = crate::updater::get_download_file_from_url(&response_url) {
-                if let Some(path_str) = local_path.to_str() {
-                    m.insert("local_path", path_str);
-                }
-            }
             if let Ok(data) = serde_json::to_string(&m) {
                 let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, data);
             }
         }
         *SOFTWARE_UPDATE_URL.lock().unwrap() = response_url;
-        *SOFTWARE_UPDATE_VERSION.lock().unwrap() = latest_release_version;
-        *SOFTWARE_UPDATE_EXE.lock().unwrap() = resp.exe;
     } else {
         *SOFTWARE_UPDATE_URL.lock().unwrap() = "".to_string();
-        *SOFTWARE_UPDATE_VERSION.lock().unwrap() = "".to_string();
-        *SOFTWARE_UPDATE_EXE.lock().unwrap() = "".to_string();
     }
     Ok(())
 }

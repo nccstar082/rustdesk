@@ -632,7 +632,7 @@ class _DesktopTabState extends State<DesktopTab>
                           width: 78,
                         )),
                     Offstage(
-                      offstage: (kUseCompatibleUiMode || isMacOS) && !showTitle,
+                      offstage: kUseCompatibleUiMode || isMacOS,
                       child: Row(children: [
                         Offstage(
                           offstage: !showLogo,
@@ -640,15 +640,10 @@ class _DesktopTabState extends State<DesktopTab>
                         ),
                         Offstage(
                             offstage: !showTitle,
-                            child: FutureBuilder<String>(
-                              future: bind.mainGetVersion(),
-                              builder: (context, snapshot) {
-                                return Text(
-                                  '${bind.mainGetAppNameSync()} ${snapshot.data ?? ''}',
-                                  style: TextStyle(fontSize: 13),
-                                ).marginOnly(left: 2);
-                              },
-                            ))
+                            child: const Text(
+                              "RustDesk",
+                              style: TextStyle(fontSize: 13),
+                            ).marginOnly(left: 2))
                       ]).marginOnly(
                         left: 5,
                         right: 10,

@@ -23,7 +23,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::common::{SOFTWARE_UPDATE_URL, SOFTWARE_UPDATE_VERSION};
+use crate::common::SOFTWARE_UPDATE_URL;
 #[cfg(feature = "flutter")]
 use crate::hbbs_http::account;
 #[cfg(not(any(target_os = "ios")))]
@@ -729,15 +729,17 @@ pub fn current_is_wayland() -> bool {
 
 #[inline]
 pub fn get_new_version() -> String {
-    SOFTWARE_UPDATE_VERSION.lock().unwrap().clone()
+    (*SOFTWARE_UPDATE_URL
+        .lock()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap_or(""))
+    .to_string()
 }
 
 #[inline]
 pub fn get_version() -> String {
-    #[cfg(target_os = "windows")]
-    return crate::VERSION_WINDOWS.to_owned();
-    
-    #[cfg(not(target_os = "windows"))]
     crate::VERSION.to_owned()
 }
 

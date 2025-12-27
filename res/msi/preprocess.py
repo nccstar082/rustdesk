@@ -467,7 +467,12 @@ def init_global_vars(dist_dir, app_name, args):
 
     global g_version
     global g_build_date
-    g_version = args.version.replace("-", ".")
+    # 为MSI兼容性处理：MSI要求版本号只能是A.B.C格式，不能包含-后缀
+    # 因此在处理版本号之前，先移除-及其后面的部分
+    # 原代码：g_version = args.version.replace("-", ".")
+    # 原代码问题：将-替换为.会导致版本号格式错误（如1.4.4-1变成1.4.4.1，不符合MSI要求）
+    # 新代码作用：移除-及其后面的部分，确保MSI使用正确的A.B.C格式版本号
+    g_version = args.version.split("-")[0]
     if g_version == "":
         g_version = read_process_output("--version")
     version_pattern = re.compile(r"\d+\.\d+\.\d+.*")

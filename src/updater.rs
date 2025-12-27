@@ -129,97 +129,21 @@ fn check_update(manually: bool) -> ResultType<()> {
     }
 
     let update_url = crate::common::SOFTWARE_UPDATE_URL.lock().unwrap().clone();
-    let update_version = crate::common::SOFTWARE_UPDATE_VERSION.lock().unwrap().clone();
-    let update_exe = crate::common::SOFTWARE_UPDATE_EXE.lock().unwrap().clone();
     if update_url.is_empty() {
         log::debug!("No update available.");
     } else {
-        // 处理URL，确保不会生成重复的路径片段
-        let mut download_url = if update_url.contains("tag") {
-            update_url.replace("tag", "download")
+        let download_url = update_url.replace("tag", "download");
+        let version = download_url.split('/').last().unwrap_or_default();
+        #[cfg(target_os = "windows")]
+        let download_url = if cfg!(feature = "flutter") {
+            format!(
+                "{}/rustdesk-{}-x86_64.{}",
+                download_url,
+                version,
+                if is_msi { "msi" } else { "exe" }
+            )
         } else {
-            update_url.clone()
-        };
-        // 优先使用JSON中的版本号，如果为空则从URL中提取
-        let version = if !update_version.is_empty() {
-            update_version.clone()
-        } else {
-            // 从URL中提取版本号，确保只获取版本号而不是完整文件名
-            let parts: Vec<&str> = download_url.split('/').collect();
-            if parts.len() > 2 {
-                // 检查倒数第二个路径段是否是版本号
-                let candidate = parts[parts.len() - 2];
-                // 检查是否符合版本号格式（x.x.x）
-                if candidate.matches('.').count() >= 1 {
-                    candidate.to_string()
-                } else {
-                    // 如果不符合，尝试从最后一个路径段中提取
-                    let last_segment = parts[parts.len() - 1];
-                    if last_segment.starts_with("rustdesk-") {
-                        let mut version_part = last_segment.trim_start_matches("rustdesk-");
-                        version_part = version_part.split('-').next().unwrap_or(version_part);
-                        // 保留完整的版本号（已经通过split('-')移除了平台和架构信息）
-                        version_part.to_string()
-                    } else {
-                        last_segment.to_string()
-                    }
-                }
-            } else {
-                download_url.split('/').last().unwrap_or_default().to_string()
-            }
-        };
-        let download_url = if !update_exe.is_empty() {
-            // 如果JSON中提供了exe文件名
-            let exe_filename = update_exe.split('/').last().unwrap_or(&update_exe);
-            
-            // 检查download_url是否已经是一个完整的文件URL
-            if download_url.ends_with(".exe") || download_url.ends_with(".msi") {
-                // 如果download_url已经包含完整文件名，直接使用
-                download_url
-            } else {
-                // 否则，确保download_url以斜杠结尾，然后追加文件名
-                let base_url = if download_url.ends_with('/') {
-                    download_url.clone()
-                } else {
-                    format!("{}/", download_url)
-                };
-                format!("{}{}", base_url, exe_filename)
-            }
-        } else {
-            // 检查download_url是否已经是一个完整的文件URL
-            if download_url.ends_with(".exe") || download_url.ends_with(".msi") {
-                // 如果已经包含完整文件名，直接使用
-                download_url
-            } else {
-                // 否则，构建完整的文件名
-                #[cfg(all(target_os = "windows", feature = "flutter"))]
-                let extension = if is_msi { "msi" } else { "exe" };
-                #[cfg(all(target_os = "windows", not(feature = "flutter")))]
-                let extension = "exe";
-                #[cfg(not(target_os = "windows"))]
-                let extension = "tar.gz";
-                
-                // 检查最后一个路径段是否是版本号
-                let segments: Vec<&str> = download_url.split('/').collect();
-                let last_segment = segments.last().unwrap_or(&"");
-                
-                // 构建文件名
-                let filename = if last_segment.matches('.').count() >= 1 {
-                    // 如果最后一个路径段看起来像版本号，直接使用
-                    format!("rustdesk-{}-x86_64.{}", last_segment, extension)
-                } else {
-                    // 否则使用从JSON或URL中提取的版本号
-                    format!("rustdesk-{}-x86_64.{}", version, extension)
-                };
-                
-                // 确保download_url以斜杠结尾，然后追加文件名
-                let base_url = if download_url.ends_with('/') {
-                    download_url.clone()
-                } else {
-                    format!("{}/", download_url)
-                };
-                format!("{}{}", base_url, filename)
-            }
+            format!("{}/rustdesk-{}-x86-sciter.exe", download_url, version)
         };
         log::debug!("New version available: {}", &version);
         let client = create_http_client_with_url(&download_url);
@@ -324,52 +248,6 @@ fn update_new_version(is_msi: bool, version: &str, file_path: &PathBuf) {
 }
 
 pub fn get_download_file_from_url(url: &str) -> Option<PathBuf> {
-    // 清理URL，移除重复的文件名部分
-    let mut filename = url.split('/').last()?.to_string();
-    
-    // 检查并修复各种可能的重复文件名情况
-    // 1. 修复重复的rustdesk前缀
-    while filename.contains("rustdesk-rustdesk-") {
-        filename = filename.replace("rustdesk-rustdesk-", "rustdesk-");
-    }
-    
-    // 2. 修复重复的.exe后缀
-    while filename.contains(".exe.exe") {
-        filename = filename.replace(".exe.exe", ".exe");
-    }
-    
-    // 3. 修复重复的.msi后缀
-    while filename.contains(".msi.msi") {
-        filename = filename.replace(".msi.msi", ".msi");
-    }
-    
-    // 4. 修复重复的-x86_64.exe组合
-    while filename.contains("-x86_64.exe-x86_64.exe") {
-        filename = filename.replace("-x86_64.exe-x86_64.exe", "-x86_64.exe");
-    }
-    
-    // 5. 修复重复的-x86_64.msi组合
-    while filename.contains("-x86_64.msi-x86_64.msi") {
-        filename = filename.replace("-x86_64.msi-x86_64.msi", "-x86_64.msi");
-    }
-    
-    // 6. 修复重复的架构信息
-    while filename.contains("-x86_64-x86_64-") {
-        filename = filename.replace("-x86_64-x86_64-", "-x86_64-");
-    }
-    
-    #[cfg(target_os = "android")]
-    {
-        // 在Android上，将更新文件存储在外部存储的Download目录中
-        // 这样系统安装程序可以访问它
-        let mut path = PathBuf::new();
-        if let Some(external_storage) = std::env::var_os("EXTERNAL_STORAGE") {
-            path.push(external_storage);
-            path.push("Download");
-            path.push(filename);
-            return Some(path);
-        }
-    }
-    // 其他平台使用系统临时目录
+    let filename = url.split('/').last()?;
     Some(std::env::temp_dir().join(filename))
 }
