@@ -125,7 +125,7 @@ Widget _buildUpdateUI(String updateUrl) {
       : InkWell(
           onTap: () async {
             // ========== 极简拼接逻辑（无版本号） ==========
-            String baseUrl = updateUrl.trimEnd('/'); // 移除末尾/，避免拼接成 "1.4.4-6//rustdesk-universal.apk"
+            String baseUrl = updateUrl.replaceAll(RegExp(r'/+$'), ''); // 移除末尾所有连续的/
             // 直接拼接固定文件名，无需处理版本号
             String fullApkUrl = "$baseUrl/rustdesk-universal.apk";
             // ========== 原有逻辑 ==========
