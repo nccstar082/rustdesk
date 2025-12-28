@@ -69,7 +69,10 @@ def get_version():
     return ''
 
 def get_main_version(version: str) -> str:
-    """从完整版本号中提取主版本号（如从1.4.4-70提取1.4.4）"""
+    """从完整版本号中提取主版本号（如从1.4.4-70提取1.4.4），优先使用环境变量VERSION"""
+    env_version = os.environ.get("VERSION")
+    if env_version:
+        return env_version
     import re
     match = re.match(r'^(\d+\.\d+\.\d+)', version)
     return match.group(1) if match else version
