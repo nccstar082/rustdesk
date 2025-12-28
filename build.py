@@ -51,8 +51,7 @@ def get_sciter_suffix() -> str:
 def get_final_deb_name(version: str) -> str:
     arch_suffix = get_arch_suffix()
     sciter_suffix = get_sciter_suffix()
-    main_version = get_main_version()  # 使用主版本号
-    return f"rustdesk-{main_version}-{arch_suffix}{sciter_suffix}.deb"
+    return f"rustdesk-{version}-{arch_suffix}{sciter_suffix}.deb"
 
 def system2(cmd):
     exit_code = os.system(cmd)
@@ -66,11 +65,6 @@ def get_version():
             if line.startswith("version"):
                 return line.replace("version", "").replace("=", "").replace('"', '').strip()
     return ''
-
-def get_main_version():
-    """获取主版本号（去除-后的部分）"""
-    full_version = get_version()
-    return full_version.split('-')[0] if '-' in full_version else full_version
 
 def parse_rc_features(feature):
     available_features = {}
@@ -188,7 +182,7 @@ def generate_build_script_for_docker():
             git clone https://github.com/microsoft/vcpkg
             vcpkg/bootstrap-vcpkg.sh
             popd
-            $VCPKG_ROOT/vcpkg install --x-install-root="$VCPKG_ROOT/installed"
+            $VCPKG_ROOT/vcpkg install libgtk-3 libva libpulse --x-install-root="$VCPKG_ROOT/installed"
             ./build.py --flutter --hwcodec
         ''')
     system2("chmod +x /tmp/build.sh")
@@ -364,15 +358,14 @@ def build_flutter_deb(version, features):
     system2('/bin/rm -rf tmpdeb/')
     system2('/bin/rm -rf ../res/DEBIAN/control')
     # 官方原始包（保留）
-    main_version = get_main_version()
-    official_deb_name = f'../rustdesk-{main_version}.deb'
+    official_deb_name = f'../rustdesk-{version}.deb'
     os.rename('rustdesk.deb', official_deb_name)
     
     # 动态生成匹配下载的包（覆盖x86_64/aarch64/sciter所有场景）
     final_deb_name = f'../{get_final_deb_name(version)}'
     shutil.copy2(official_deb_name, final_deb_name)
     # 兼容纯架构后缀包（无sciter）
-    pure_arch_deb_name = f'../rustdesk-{main_version}-{get_arch_suffix()}.deb'
+    pure_arch_deb_name = f'../rustdesk-{version}-{get_arch_suffix()}.deb'
     if pure_arch_deb_name != final_deb_name:
         shutil.copy2(official_deb_name, pure_arch_deb_name)
     
@@ -412,15 +405,14 @@ def build_deb_from_folder(version, binary_folder):
     system2('/bin/rm -rf tmpdeb/')
     system2('/bin/rm -rf ../res/DEBIAN/control')
     # 官方原始包（保留）
-    main_version = get_main_version()
-    official_deb_name = f'../rustdesk-{main_version}.deb'
+    official_deb_name = f'../rustdesk-{version}.deb'
     os.rename('rustdesk.deb', official_deb_name)
     
     # 动态生成匹配下载的包
     final_deb_name = f'../{get_final_deb_name(version)}'
     shutil.copy2(official_deb_name, final_deb_name)
     # 兼容纯架构后缀包
-    pure_arch_deb_name = f'../rustdesk-{main_version}-{get_arch_suffix()}.deb'
+    pure_arch_deb_name = f'../rustdesk-{version}-{get_arch_suffix()}.deb'
     if pure_arch_deb_name != final_deb_name:
         shutil.copy2(official_deb_name, pure_arch_deb_name)
     
@@ -513,9 +505,10 @@ def main():
     res_dir = 'resources'
     external_resources(flutter, args, res_dir)
     if windows:
-        os.chdir('libs/virtual_display/dylib')
-        system2('cargo build --release')
-        os.chdir('../../..')
+        if not flutter or not skip_cargo:  # 只有在非Flutter构建或不跳过cargo时才构建虚拟显示dylib
+            os.chdir('libs/virtual_display/dylib')
+            system2('cargo build --release')
+            os.chdir('../../..')
 
         if flutter:
             build_flutter_windows(version, features, args.skip_portable_pack)
@@ -630,15 +623,14 @@ def main():
                 md5_file_folder("tmpdeb/")
                 system2('dpkg-deb -b tmpdeb rustdesk.deb; /bin/rm -rf tmpdeb/')
                 # 官方原始包（保留）
-                main_version = get_main_version()
-                official_deb_name = f'rustdesk-{main_version}.deb'
+                official_deb_name = f'rustdesk-{version}.deb'
                 os.rename('rustdesk.deb', official_deb_name)
                 
                 # 动态生成匹配下载的包
                 final_deb_name = get_final_deb_name(version)
                 shutil.copy2(official_deb_name, final_deb_name)
                 # 兼容纯架构后缀包
-                pure_arch_deb_name = f'rustdesk-{main_version}-{get_arch_suffix()}.deb'
+                pure_arch_deb_name = f'rustdesk-{version}-{get_arch_suffix()}.deb'
                 if pure_arch_deb_name != final_deb_name:
                     shutil.copy2(official_deb_name, pure_arch_deb_name)
 
