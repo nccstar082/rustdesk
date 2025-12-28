@@ -49,9 +49,11 @@ def get_sciter_suffix() -> str:
 
 # 核心新增：生成最终下载用的文件名
 def get_final_deb_name(version: str) -> str:
+    # 优先使用环境变量中的VERSION（主版本号），如果没有则从完整版本号中提取
+    main_version = os.environ.get("VERSION", get_main_version(version))
     arch_suffix = get_arch_suffix()
     sciter_suffix = get_sciter_suffix()
-    return f"rustdesk-{version}-{arch_suffix}{sciter_suffix}.deb"
+    return f"rustdesk-{main_version}-{arch_suffix}{sciter_suffix}.deb"
 
 def system2(cmd):
     exit_code = os.system(cmd)
@@ -65,6 +67,12 @@ def get_version():
             if line.startswith("version"):
                 return line.replace("version", "").replace("=", "").replace('"', '').strip()
     return ''
+
+def get_main_version(version: str) -> str:
+    """从完整版本号中提取主版本号（如从1.4.4-70提取1.4.4）"""
+    import re
+    match = re.match(r'^(\d+\.\d+\.\d+)', version)
+    return match.group(1) if match else version
 
 def parse_rc_features(feature):
     available_features = {}
@@ -365,7 +373,8 @@ def build_flutter_deb(version, features):
     final_deb_name = f'../{get_final_deb_name(version)}'
     shutil.copy2(official_deb_name, final_deb_name)
     # 兼容纯架构后缀包（无sciter）
-    pure_arch_deb_name = f'../rustdesk-{version}-{get_arch_suffix()}.deb'
+    main_version = os.environ.get("VERSION", get_main_version(version))
+    pure_arch_deb_name = f'../rustdesk-{main_version}-{get_arch_suffix()}.deb'
     if pure_arch_deb_name != final_deb_name:
         shutil.copy2(official_deb_name, pure_arch_deb_name)
     
@@ -412,7 +421,8 @@ def build_deb_from_folder(version, binary_folder):
     final_deb_name = f'../{get_final_deb_name(version)}'
     shutil.copy2(official_deb_name, final_deb_name)
     # 兼容纯架构后缀包
-    pure_arch_deb_name = f'../rustdesk-{version}-{get_arch_suffix()}.deb'
+    main_version = os.environ.get("VERSION", get_main_version(version))
+    pure_arch_deb_name = f'../rustdesk-{main_version}-{get_arch_suffix()}.deb'
     if pure_arch_deb_name != final_deb_name:
         shutil.copy2(official_deb_name, pure_arch_deb_name)
     
@@ -630,7 +640,8 @@ def main():
                 final_deb_name = get_final_deb_name(version)
                 shutil.copy2(official_deb_name, final_deb_name)
                 # 兼容纯架构后缀包
-                pure_arch_deb_name = f'rustdesk-{version}-{get_arch_suffix()}.deb'
+                main_version = os.environ.get("VERSION", get_main_version(version))
+                pure_arch_deb_name = f'rustdesk-{main_version}-{get_arch_suffix()}.deb'
                 if pure_arch_deb_name != final_deb_name:
                     shutil.copy2(official_deb_name, pure_arch_deb_name)
 
