@@ -1813,15 +1813,17 @@ jobs:
             mv ./target/release/rustdesk ./Release/rustdesk
             wget -O ./Release/libsciter-gtk.so https://github.com/c-smile/sciter-sdk/raw/master/bin.lnx/${{ matrix.job.sciter_arch }}/libsciter-gtk.so
             export DEB_ARCH=${{ matrix.job.deb_arch }}
+            export SCITER_BUILD=1
             ./build.py --package ./Release
 
-      - name: Rename rustdesk
-        shell: bash
-        run: |
-          for name in rustdesk*??.deb; do
-              # use cp to duplicate deb files to fit other packages.
-              cp "$name" "${name%%.deb}-${{ matrix.job.arch }}-sciter.deb"
-          done
+      # 注：build.py现在会自动生成带-sciter后缀的正确文件名，无需额外重命名
+      # - name: Rename rustdesk
+      #   shell: bash
+      #   run: |
+      #     for name in rustdesk*??.deb; do
+      #         # use cp to duplicate deb files to fit other packages.
+      #         cp "$name" "${name%%.deb}-${{ matrix.job.arch }}-sciter.deb"
+      #     done
 
       - name: Publish debian package
         if: env.UPLOAD_ARTIFACT == 'true'

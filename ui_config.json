@@ -1,0 +1,16 @@
+{
+  "window_width": 1200,
+  "window_height": 700,
+  "column_widths": {
+    "select": 60,
+    "id": 120,
+    "name": 200,
+    "status": 100,
+    "conclusion": 100,
+    "event": 120,
+    "created_at": 200,
+    "trigger_ref": 150,
+    "commit_msg": 250,
+    "action": 80
+  }
+}
