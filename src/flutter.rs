@@ -984,7 +984,7 @@ impl InvokeUiSession for FlutterHandler {
     }
 
     fn on_connected(&self, _conn_type: ConnType) {
-        self.push_event("on_connected", &[], &[]);
+        self.push_event::<()>("on_connected", &[], &[]);
     }
 
     fn msgbox(&self, msgtype: &str, title: &str, text: &str, link: &str, retry: bool) {
