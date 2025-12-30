@@ -580,6 +580,11 @@ _registerEventHandler() {
     platformFFI.registerEventHandler('native_ui', 'native_ui', (evt) async {
       NativeUiHandler.instance.onEvent(evt);
     });
+    
+    // Register on_connected event handler to minimize window when connection is established
+    platformFFI.registerEventHandler('on_connected', 'on_connected', (evt) async {
+      await windowManager.minimize();
+    });
   }
 }
 
