@@ -1328,6 +1328,13 @@ impl Connection {
             return;
         }
         self.authorized = true;
+        // Send on_connected event to main window when client connects successfully
+        let mut h: std::collections::HashMap<&str, serde_json::Value> = std::collections::HashMap::new();
+        h.insert("name", serde_json::json!("on_connected"));
+        let out = serde_json::ser::to_string(&h).unwrap_or("".to_owned());
+        log::info!("Sending on_connected event to main window from server: {}", out);
+        let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, out);
+        
         let (conn_type, auth_conn_type) = if self.file_transfer.is_some() {
             (1, AuthConnType::FileTransfer)
         } else if self.port_forward_socket.is_some() {
