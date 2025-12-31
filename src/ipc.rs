@@ -291,8 +291,6 @@ pub enum Data {
     SocksWs(Option<Box<(Option<config::Socks5Server>, String)>>),
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     Whiteboard((String, crate::whiteboard::CustomEvent)),
-    #[cfg(all(windows, not(feature = "flutter")))]
-    MinimizeWindow,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -781,6 +779,13 @@ pub async fn connect(ms_timeout: u64, postfix: &str) -> ResultType<ConnectionTmp
     Ok(ConnectionTmpl::new(client))
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::main(flavor = "current_thread")]
+pub async fn start_pa() {
+    use crate::audio_service::AUDIO_DATA_SIZE_U8;
+
+    match new_listener("_pa").await {
+        Ok(mut incoming) => {
             loop {
                 if let Some(result) = incoming.next().await {
                     match result {

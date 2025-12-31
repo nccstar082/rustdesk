@@ -1338,6 +1338,16 @@ impl Connection {
             (4, AuthConnType::Terminal)
         } else {
             (0, AuthConnType::Remote)
+        };
+        self.authed_conn_id = Some(self::raii::AuthedConnID::new(
+            self.inner.id(),
+            auth_conn_type,
+            self.session_key(),
+            self.tx_from_authed.clone(),
+            self.lr.clone(),
+        ));
+        self.session_last_recv_time = SESSIONS
+            .lock()
             .unwrap()
             .get(&self.session_key())
             .map(|s| s.last_recv_time.clone());
@@ -1607,14 +1617,6 @@ impl Connection {
             if !wait_session_id_confirm {
                 self.try_sub_monitor_services();
             }
-        }
-
-        // Windows平台下，非Flutter环境，连接成功后最小化主窗口
-        #[cfg(all(windows, not(feature = "flutter")))]
-        {
-            // 发送窗口最小化的IPC消息
-            let _ = self.tx_to_cm.send(ipc::Data::MinimizeWindow);
-            log::info!("Sent minimize window command after successful connection");
         }
     }
 

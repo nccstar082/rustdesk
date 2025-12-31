@@ -1262,7 +1262,7 @@ async fn check_connect_status_(reconnect: bool, rx: mpsc::UnboundedReceiver<ipc:
                                     key_confirmed = _c;
                                 }
                                 *UI_STATUS.lock().unwrap() = UiStatus {
-                                    status_num: x as _, 
+                                    status_num: x as _,
                                     #[cfg(not(feature = "flutter"))]
                                     key_confirmed: _c,
                                     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1273,11 +1273,17 @@ async fn check_connect_status_(reconnect: bool, rx: mpsc::UnboundedReceiver<ipc:
                                     video_conn_count,
                                 };
                             }
-                            #[cfg(all(windows, not(feature = "flutter")))]
-                            Ok(Some(ipc::Data::MinimizeWindow)) => {
-                                crate::platform::windows::minimize_main_window();
-                            }
                             _ => {}
+                        }
+                    }
+                    Some(data) = rx.recv() => {
+                        allow_err!(c.send(&data).await);
+                    }
+                    _ = timer.tick() => {
+                        c.send(&ipc::Data::OnlineStatus(None)).await.ok();
+                        c.send(&ipc::Data::Options(None)).await.ok();
+                        c.send(&ipc::Data::Config(("id".to_owned(), None))).await.ok();
+                        c.send(&ipc::Data::Config(("temporary-password".to_owned(), None))).await.ok();
                         #[cfg(feature = "flutter")]
                         c.send(&ipc::Data::VideoConnCount(None)).await.ok();
                     }
