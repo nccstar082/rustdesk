@@ -4,11 +4,10 @@ use crate::keyboard::input_source::{change_input_source, get_cur_session_input_s
 use crate::platform::linux::is_x11;
 use crate::{
     client::file_trait::FileManager,
-    common::{make_fd_to_json, make_vec_fd_to_json},
+    common::{self, input::*, make_fd_to_json, make_vec_fd_to_json},
     flutter::{
         self, session_add, session_add_existed, session_start_, sessions, try_sync_peer_option,
     },
-    input::*,
     ui_interface::{self, *},
 };
 use flutter_rust_bridge::{StreamSink, SyncReturn};
