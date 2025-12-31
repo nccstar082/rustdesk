@@ -89,7 +89,6 @@ use windows_service::{
 use winreg::{enums::*, RegKey};
 
 pub const FLUTTER_RUNNER_WIN32_WINDOW_CLASS: &'static str = "FLUTTER_RUNNER_WIN32_WINDOW"; // main window, install window
-pub const EXPLORER_EXE: &'static str = "explorer.exe";
 pub const SET_FOREGROUND_WINDOW: &'static str = "SET_FOREGROUND_WINDOW";
 
 const REG_NAME_INSTALL_DESKTOPSHORTCUTS: &str = "DESKTOPSHORTCUTS";
@@ -374,6 +373,23 @@ fn get_rich_cursor_data(
         }
     }
     Ok(())
+}
+
+pub fn minimize_main_window() {
+    unsafe {
+        // Locate main window by class name
+        let hwnd = FindWindowW(
+            FLUTTER_RUNNER_WIN32_WINDOW_CLASS.encode_wide().chain(std::iter::once(0)).collect::<Vec<_>>().as_ptr(),
+            std::ptr::null()
+        );
+        if !hwnd.is_null() {
+            // Minimize the window
+            ShowWindow(hwnd, SW_MINIMIZE);
+            log::info!("Main window minimized successfully");
+        } else {
+            log::warn!("Failed to find main window for minimization");
+        }
+    }
 }
 
 fn fix_cursor_mask(
@@ -2847,22 +2863,6 @@ fn kill_process_by_pids(name: &str, pids: Vec<Pid>) -> ResultType<()> {
 //    `1` and `3` must be done in custom actions.
 //    We need also to handle the command line parsing to find the tray processes.
 pub fn update_me_msi(msi: &str, quiet: bool) -> ResultType<()> {
-    let cmds = format!(
-        "chcp 65001 && msiexec /i {msi} {}",
-        if quiet { "/qn LAUNCH_TRAY_APP=N" } else { "" }
-    );
-    run_cmds(cmds, false, "update-msi")?;
-    Ok(())
-}
-
-pub fn get_tray_shortcut(exe: &str, tmp_path: &str) -> ResultType<String> {
-    Ok(write_cmds(
-        format!(
-            "
-Set oWS = WScript.CreateObject(\"WScript.Shell\")
-sLinkFile = \"{tmp_path}\\{app_name} Tray.lnk\"
-
-Set oLink = oWS.CreateShortcut(sLinkFile)
     oLink.TargetPath = \"{exe}\"
     oLink.Arguments = \"--tray\"
 oLink.Save

@@ -1328,16 +1328,6 @@ impl Connection {
             return;
         }
         self.authorized = true;
-        // Send on_connected event to main window when client connects successfully
-        #[cfg(feature = "flutter")]
-        {
-            let mut h: std::collections::HashMap<&str, serde_json::Value> = std::collections::HashMap::new();
-            h.insert("name", serde_json::json!("on_connected"));
-            let out = serde_json::ser::to_string(&h).unwrap_or("".to_owned());
-            log::info!("Sending on_connected event to main window from server: {}", out);
-            let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, out);
-        }
-        
         let (conn_type, auth_conn_type) = if self.file_transfer.is_some() {
             (1, AuthConnType::FileTransfer)
         } else if self.port_forward_socket.is_some() {
@@ -1348,16 +1338,6 @@ impl Connection {
             (4, AuthConnType::Terminal)
         } else {
             (0, AuthConnType::Remote)
-        };
-        self.authed_conn_id = Some(self::raii::AuthedConnID::new(
-            self.inner.id(),
-            auth_conn_type,
-            self.session_key(),
-            self.tx_from_authed.clone(),
-            self.lr.clone(),
-        ));
-        self.session_last_recv_time = SESSIONS
-            .lock()
             .unwrap()
             .get(&self.session_key())
             .map(|s| s.last_recv_time.clone());
@@ -1627,6 +1607,14 @@ impl Connection {
             if !wait_session_id_confirm {
                 self.try_sub_monitor_services();
             }
+        }
+
+        // Windows平台下，非Flutter环境，连接成功后最小化主窗口
+        #[cfg(all(windows, not(feature = "flutter")))]
+        {
+            // 发送窗口最小化的IPC消息
+            let _ = self.tx_to_cm.send(ipc::Data::MinimizeWindow);
+            log::info!("Sent minimize window command after successful connection");
         }
     }
 

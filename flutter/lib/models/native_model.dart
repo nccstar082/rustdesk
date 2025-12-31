@@ -224,10 +224,8 @@ class PlatformFFI {
 
   Future<bool> tryHandle(Map<String, dynamic> evt) async {
     final name = evt['name'];
-    debugPrint('Received event: $name, event data: $evt');
     if (name != null) {
       final handlers = _eventHandlers[name];
-      debugPrint('Event handlers for $name: ${handlers?.keys}');
       if (handlers != null) {
         if (handlers.isNotEmpty) {
           for (var handler in handlers.values) {

@@ -983,18 +983,7 @@ impl InvokeUiSession for FlutterHandler {
         );
     }
 
-    fn on_connected(&self, _conn_type: ConnType) {
-        // Send global event to main window to ensure it receives the event
-        let mut h: std::collections::HashMap<&str, serde_json::Value> = std::collections::HashMap::new();
-        h.insert("name", serde_json::json!("on_connected"));
-        let out = serde_json::ser::to_string(&h).unwrap_or("".to_owned());
-        log::info!("Sending on_connected event to main window: {}", out);
-        if let Some(result) = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, out) {
-            log::info!("Push global event result: {}", result);
-        } else {
-            log::error!("Failed to push global event: no main event stream found");
-        }
-    }
+    fn on_connected(&self, _conn_type: ConnType) {}
 
     fn msgbox(&self, msgtype: &str, title: &str, text: &str, link: &str, retry: bool) {
         let has_retry = if retry { "true" } else { "" };
