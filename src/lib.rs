@@ -29,11 +29,11 @@ pub mod ipc;
 pub mod ui;
 mod version;
 pub use version::*;
-#[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]
+#[cfg(feature = "flutter")]
 mod bridge_generated;
-#[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]
+#[cfg(feature = "flutter")]
 pub mod flutter;
-#[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]
+#[cfg(feature = "flutter")]
 pub mod flutter_ffi;
 use common::*;
 mod auth_2fa;

@@ -1329,7 +1329,7 @@ impl Connection {
         }
         self.authorized = true;
         // Send on_connected event to main window when client connects successfully
-        #[cfg(any(target_os = "android", target_os = "ios", feature = "flutter"))]
+        #[cfg(feature = "flutter")]
         {
             let mut h: std::collections::HashMap<&str, serde_json::Value> = std::collections::HashMap::new();
             h.insert("name", serde_json::json!("on_connected"));
