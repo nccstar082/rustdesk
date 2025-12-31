@@ -20,6 +20,7 @@ use hbb_common::{
     rendezvous_proto::ConnType,
     ResultType,
 };
+use serde_json;
 use std::{
     collections::HashMap,
     path::PathBuf,
