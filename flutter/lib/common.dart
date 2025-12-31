@@ -2493,14 +2493,14 @@ connectMainDesktop(String id,
         isSharedPassword: isSharedPassword,
         forceRelay: forceRelay);
     
-    // 新增：连接成功后隐藏主窗口
+    // 新增：连接成功后最小化主窗口
     try {
       // 延迟一点时间确保新窗口已经创建
       await Future.delayed(Duration(milliseconds: 500));
-      // 隐藏主窗口
-      await windowManager.hide();
+      // 最小化主窗口
+      await windowManager.minimize();
     } catch (e) {
-      print("隐藏主窗口失败: $e");
+      print("最小化主窗口失败: $e");
     }
   }
 }
