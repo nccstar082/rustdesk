@@ -369,6 +369,11 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
           await Future.delayed(Duration(milliseconds: 100));
           c++;
         }
+        
+        // 新增：如果这是最后一个远程桌面窗口，显示主窗口
+        if (rustDeskWinManager.getActiveWindows().isEmpty) {
+          await rustDeskWinManager.showMainWindow();
+        }
       }
 
       loopCloseWindow();

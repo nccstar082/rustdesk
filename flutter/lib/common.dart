@@ -2492,6 +2492,16 @@ connectMainDesktop(String id,
         password: password,
         isSharedPassword: isSharedPassword,
         forceRelay: forceRelay);
+    
+    // 新增：连接成功后隐藏主窗口
+    try {
+      // 延迟一点时间确保新窗口已经创建
+      await Future.delayed(Duration(milliseconds: 500));
+      // 隐藏主窗口
+      await windowManager.hide();
+    } catch (e) {
+      print("隐藏主窗口失败: $e");
+    }
   }
 }
 
