@@ -262,7 +262,7 @@ class DesktopTab extends StatefulWidget {
     Key? key,
     required this.controller,
     this.showLogo = true,
-    this.showTitle = true, // 保留默认值，由调用处控制（desktop_tab_page已设为true）
+    this.showTitle = false, // 保留默认值，由调用处控制（desktop_tab_page已设为true）
     this.showMinimize = true,
     this.showMaximize = true,
     this.showClose = true,
