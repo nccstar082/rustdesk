@@ -152,6 +152,17 @@ void runMainApp(bool startService) async {
   await Future.wait([gFFI.abModel.loadCache(), gFFI.groupModel.loadCache()]);
   gFFI.userModel.refreshCurrentUser();
   runApp(App());
+  
+  // Test window minimization functionality
+  Future.delayed(Duration(seconds: 5), () async {
+    debugPrint('Testing window minimization after 5 seconds...');
+    try {
+      await windowManager.minimize();
+      debugPrint('Window minimization test successful');
+    } catch (e) {
+      debugPrint('Window minimization test failed: $e');
+    }
+  });
 
   bool? alwaysOnTop;
   if (isDesktop) {
@@ -581,10 +592,19 @@ _registerEventHandler() {
       NativeUiHandler.instance.onEvent(evt);
     });
     
-    // Register on_connected event handler to minimize window when connection is established
-    platformFFI.registerEventHandler('on_connected', 'on_connected', (evt) async {
-      await windowManager.minimize();
-    });
+    // Register on_connected event handler only for main window
+    if (desktopType == DesktopType.main) {
+      debugPrint('Registering on_connected event handler for main window');
+      platformFFI.registerEventHandler('on_connected', 'on_connected', (evt) async {
+        debugPrint('on_connected event received in main window, minimizing window');
+        try {
+          await windowManager.minimize();
+          debugPrint('Main window minimized successfully');
+        } catch (e) {
+          debugPrint('Failed to minimize main window: $e');
+        }
+      });
+    }
   }
 }
 
