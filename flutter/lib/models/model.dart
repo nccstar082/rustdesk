@@ -457,6 +457,11 @@ class FfiModel with ChangeNotifier {
         _handlePrinterRequest(evt, sessionId, peerId);
       } else if (name == 'screenshot') {
         _handleScreenshot(evt, sessionId, peerId);
+      } else if (name == 'on_connected') {
+        // 当接收到连接成功事件时，在Windows平台上最小化主窗口
+        if (isWindows) {
+          await windowManager.minimize();
+        }
       } else {
         debugPrint('Event is not handled in the fixed branch: $name');
       }

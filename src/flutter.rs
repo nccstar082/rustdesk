@@ -983,7 +983,19 @@ impl InvokeUiSession for FlutterHandler {
         );
     }
 
-    fn on_connected(&self, _conn_type: ConnType) {}
+    fn on_connected(&self, conn_type: ConnType) {
+        let conn_type_str = match conn_type {
+            ConnType::DEFAULT_CONN => "default",
+            ConnType::FILE_TRANSFER => "file_transfer",
+            ConnType::VIEW_CAMERA => "view_camera",
+            ConnType::TERMINAL => "terminal",
+            ConnType::PORT_FORWARD => "port_forward",
+            ConnType::RDP => "rdp",
+            _ => "other",
+        };
+        // 通知 Flutter 前端：连接已建立。Flutter 端收到后可在 Windows 上最小化主窗口。
+        self.push_event("on_connected", &[("conn_type", &conn_type_str)], &[]);
+    }
 
     fn msgbox(&self, msgtype: &str, title: &str, text: &str, link: &str, retry: bool) {
         let has_retry = if retry { "true" } else { "" };
