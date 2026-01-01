@@ -8,7 +8,6 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/main.dart';
 import 'package:flutter_hbb/models/input_model.dart';
-import 'package:window_manager/window_manager.dart';
 
 /// must keep the order
 // ignore: constant_identifier_names
@@ -509,25 +508,6 @@ class RustDeskMultiWindowManager {
 
   Set<int> getActiveWindows() {
     return _activeWindows;
-  }
-
-  // 新增：隐藏主窗口的方法
-  Future<void> hideMainWindow() async {
-    try {
-      await windowManager.hide();
-    } catch (e) {
-      debugPrint("隐藏主窗口失败: $e");
-    }
-  }
-
-  // 新增：显示主窗口的方法
-  Future<void> showMainWindow() async {
-    try {
-      await windowManager.show();
-      await windowManager.focus();
-    } catch (e) {
-      debugPrint("显示主窗口失败: $e");
-    }
   }
 
   Future<void> _notifyActiveWindow() async {

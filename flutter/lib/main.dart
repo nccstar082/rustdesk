@@ -23,7 +23,6 @@ import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
-
 import 'common.dart';
 import 'consts.dart';
 import 'mobile/pages/home_page.dart';
@@ -134,7 +133,7 @@ Future<void> initEnv(String appType) async {
   // focus on multi-ffi on desktop first
   await initGlobalFFI();
   // await Firebase.initializeApp();
-  await _registerEventHandler();
+  _registerEventHandler();
   // Update the system theme.
   updateSystemWindowTheme();
 }
@@ -564,7 +563,7 @@ Widget _keepScaleBuilder(BuildContext context, Widget? child) {
   );
 }
 
-_registerEventHandler() async {
+_registerEventHandler() {
   if (isDesktop && desktopType != DesktopType.main) {
     platformFFI.registerEventHandler('theme', 'theme', (evt) async {
       String? dark = evt['dark'];
@@ -581,7 +580,6 @@ _registerEventHandler() async {
     platformFFI.registerEventHandler('native_ui', 'native_ui', (evt) async {
       NativeUiHandler.instance.onEvent(evt);
     });
-
   }
 }
 

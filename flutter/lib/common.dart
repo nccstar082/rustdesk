@@ -2493,16 +2493,6 @@ connectMainDesktop(String id,
         isSharedPassword: isSharedPassword,
         forceRelay: forceRelay);
   }
-  
-  // 新增：连接成功后最小化主窗口
-  try {
-    // 延迟一点时间确保新窗口已经创建
-    await Future.delayed(Duration(milliseconds: 500));
-    // 最小化主窗口
-    await windowManager.minimize();
-  } catch (e) {
-    print("最小化主窗口失败: $e");
-  }
 }
 
 /// Connect to a peer with [id].
