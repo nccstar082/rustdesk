@@ -25,6 +25,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'common.dart';
 import 'consts.dart';
+import 'desktop/window_minimize_on_connect.dart';
 import 'mobile/pages/home_page.dart';
 import 'mobile/pages/server_page.dart';
 import 'models/platform_model.dart';
@@ -134,6 +135,8 @@ Future<void> initEnv(String appType) async {
   await initGlobalFFI();
   // await Firebase.initializeApp();
   _registerEventHandler();
+  // 初始化窗口最小化功能
+  await WindowMinimizeOnConnect.initialize();
   // Update the system theme.
   updateSystemWindowTheme();
 }

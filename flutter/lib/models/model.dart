@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -12,6 +13,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_hbb/common/widgets/peers_view.dart';
 import 'package:flutter_hbb/consts.dart';
+import '../desktop/window_minimize_on_connect.dart';
 import 'package:flutter_hbb/models/ab_model.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:flutter_hbb/models/cm_file_model.dart';
@@ -459,9 +461,7 @@ class FfiModel with ChangeNotifier {
         _handleScreenshot(evt, sessionId, peerId);
       } else if (name == 'on_connected') {
         // 当接收到连接成功事件时，在Windows平台上最小化主窗口
-        if (isWindows) {
-          await windowManager.minimize();
-        }
+        await WindowMinimizeOnConnect.handleConnectedEvent();
       } else {
         debugPrint('Event is not handled in the fixed branch: $name');
       }
