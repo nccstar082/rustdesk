@@ -991,7 +991,6 @@ impl InvokeUiSession for FlutterHandler {
             ConnType::TERMINAL => "terminal",
             ConnType::PORT_FORWARD => "port_forward",
             ConnType::RDP => "rdp",
-            ConnType::TCP_TUNNELING => "tcp_tunneling",
             _ => "other",
         };
         // 通知 Flutter 前端：连接已建立。Flutter 端收到后可在 Windows 上最小化主窗口。
