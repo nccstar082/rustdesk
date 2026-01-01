@@ -984,7 +984,7 @@ impl InvokeUiSession for FlutterHandler {
     }
 
     fn on_connected(&self, conn_type: ConnType) {
-        let conn_type_str = match conn_type {
+        let conn_type_str = #[allow(unreachable_patterns)] match conn_type {
             ConnType::DEFAULT_CONN => "default",
             ConnType::FILE_TRANSFER => "file_transfer",
             ConnType::VIEW_CAMERA => "view_camera",
