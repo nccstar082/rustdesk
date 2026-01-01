@@ -7,6 +7,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:window_manager/window_manager.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 
 import '../../consts.dart';
@@ -121,6 +122,19 @@ class _RemotePageState extends State<RemotePage>
           _ffi.ffiModel.pi.platform, _ffi.dialogManager);
       _ffi.recordingModel
           .updateStatus(bind.sessionGetIsRecording(sessionId: _ffi.sessionId));
+      // 自动隐藏主窗口 - 当远程桌面连接成功时
+      if (desktopType == DesktopType.remote) {
+        // 延迟隐藏主窗口，确保远程窗口已经完全显示
+        Future.delayed(Duration(milliseconds: 500), () async {
+          try {
+            // 隐藏主窗口
+            await windowManager.hide();
+            print("主窗口已自动隐藏 - 远程连接成功");
+          } catch (e) {
+            print("隐藏主窗口时出错: $e");
+          }
+        });
+      }
     });
     _ffi.canvasModel.initializeEdgeScrollFallback(this);
     _ffi.start(
