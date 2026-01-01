@@ -23,6 +23,7 @@ import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'desktop/window_minimize_on_connect.dart' as minimize_handler;
 import 'common.dart';
 import 'consts.dart';
 import 'mobile/pages/home_page.dart';
@@ -580,6 +581,10 @@ _registerEventHandler() {
     platformFFI.registerEventHandler('native_ui', 'native_ui', (evt) async {
       NativeUiHandler.instance.onEvent(evt);
     });
+    // Register window minimize on connect handler
+    if (Platform.isWindows) {
+      minimize_handler.setupMinimizeOnConnect(platformFFI.registerEventHandler);
+    }
   }
 }
 

@@ -407,6 +407,11 @@ class FfiModel with ChangeNotifier {
       } else if (name == 'on_voice_call_incoming') {
         // Voice call is requested by the peer.
         parent.target?.chatModel.onVoiceCallIncoming();
+      } else if (name == 'on_connected') {
+        // 当连接成功时，在Windows平台上最小化主窗口
+        if (Platform.isWindows) {
+          await windowManager.minimize();
+        }
       } else if (name == 'update_voice_call_state') {
         parent.target?.serverModel.updateVoiceCallState(evt);
       } else if (name == 'fingerprint') {
