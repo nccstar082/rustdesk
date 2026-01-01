@@ -13,7 +13,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_hbb/common/widgets/peers_view.dart';
 import 'package:flutter_hbb/consts.dart';
-import '../desktop/window_minimize_on_connect.dart';
 import 'package:flutter_hbb/models/ab_model.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:flutter_hbb/models/cm_file_model.dart';
@@ -41,6 +40,8 @@ import 'package:uuid/uuid.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:vector_math/vector_math.dart' show Vector2;
+
+import '../desktop/window_minimize_on_connect.dart';
 
 import '../common.dart';
 import '../utils/image.dart' as img;
