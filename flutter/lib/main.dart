@@ -42,8 +42,7 @@ late List<String> kBootArgs;
 const double WINDOW_WIDTH = 800;
 const double WINDOW_HEIGHT = 495;
 const Size WINDOW_SIZE = Size(WINDOW_WIDTH, WINDOW_HEIGHT);
-// 【修改1】添加主窗口ID常量定义（缺失导致语法错误）
-const int kWindowMainId = 0;
+// 【修复1：删除重复的kWindowMainId定义，使用consts.dart中已有的常量】
 
 Future<void> main(List<String> args) async {
   earlyAssert();
@@ -157,7 +156,7 @@ void runMainApp(bool startService) async {
   await Future.wait([gFFI.abModel.loadCache(), gFFI.groupModel.loadCache()]);
   gFFI.userModel.refreshCurrentUser();
 
-  // 【修改2】删除未定义的 _setupConnectionStatusListener() 调用（核心语法错误）
+  // 【修复2：删除未定义的_setupConnectionStatusListener()调用】
 
   runApp(App());
 
@@ -569,7 +568,7 @@ Widget _keepScaleBuilder(BuildContext context, Widget? child) {
   );
 }
 
-// 【修改3】添加void返回类型，规范函数定义
+// 【修复3：修正WindowController.isVisible()调用错误，改用全局windowManager API】
 void _registerEventHandler() {
   if (isDesktop && desktopType != DesktopType.main) {
     platformFFI.registerEventHandler('theme', 'theme', (evt) async {
@@ -588,13 +587,13 @@ void _registerEventHandler() {
     platformFFI.registerEventHandler('native_ui', 'native_ui', (evt) async {
       NativeUiHandler.instance.onEvent(evt);
     });
-
+    
     // 带日志的连接成功最小化主窗口逻辑
     platformFFI.registerEventHandler('session', 'session', (evt) async {
       try {
         // ===== 日志1：打印接收到的原始事件 =====
         debugPrint("【RustDesk日志】接收到session事件：${jsonEncode(evt)}，子窗口ID：$kWindowId");
-
+        
         // 精准匹配连接成功事件
         final String? event = evt['event'];
         if (event != 'connect_success' && event != 'on_session_connected') {
@@ -608,19 +607,22 @@ void _registerEventHandler() {
           return;
         }
 
-        // 获取主窗口控制器并打印状态
-        final mainWindow = WindowController.fromWindowId(kWindowMainId);
-        final isMainVisible = await mainWindow.isVisible();
-        final isMainMinimized = await mainWindow.isMinimized();
+        // 修复核心：改用全局windowManager检查主窗口状态（WindowController无isVisible方法）
+        final mainWindowManager = WindowManager.instance;
+        await mainWindowManager.ensureInitialized();
+        final isMainMinimized = await mainWindowManager.isMinimized();
+        // 主窗口未最小化 = 可见（简化逻辑，满足需求）
+        final isMainVisible = !isMainMinimized;
+        
         debugPrint("【RustDesk日志】主窗口状态 - 可见：$isMainVisible，已最小化：$isMainMinimized");
-
-        // 执行最小化
-        if (isMainVisible && !isMainMinimized) {
+        
+        // 执行最小化（仅当主窗口未最小化时）
+        if (isMainVisible) {
           await Future.delayed(const Duration(milliseconds: 500));
-          await mainWindow.minimize();
+          await mainWindowManager.minimize();
           debugPrint("【RustDesk日志】主窗口已在连接成功后自动最小化");
         } else {
-          debugPrint("【RustDesk日志】主窗口无需最小化（不可见/已最小化）");
+          debugPrint("【RustDesk日志】主窗口无需最小化（已最小化）");
         }
       } catch (e, stack) {
         // 打印异常+调用栈，方便定位问题
