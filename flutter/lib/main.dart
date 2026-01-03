@@ -154,6 +154,11 @@ void runMainApp(bool startService) async {
   }
   await Future.wait([gFFI.abModel.loadCache(), gFFI.groupModel.loadCache()]);
   gFFI.userModel.refreshCurrentUser();
+
+
+  // 注册连接状态监听器以实现连接成功后最小化
+  _setupConnectionStatusListener();
+
   runApp(App());
 
   bool? alwaysOnTop;
@@ -585,6 +590,24 @@ _registerEventHandler() {
     });
   }
 }
+
+// 添加连接状态监听器以实现连接成功后最小化主窗口
+void _setupConnectionStatusListener() {
+  if (isDesktop) {
+    // 注册连接状态变化事件处理器
+    platformFFI.registerEventHandler('connection_status', 'connection_status', (evt) async {
+      String? status = evt['status'];
+      String? peerId = evt['peer_id'];
+      
+      if (status == 'connected' && peerId != null) {
+        // 直接最小化，不检查配置选项
+        await Future.delayed(Duration(milliseconds: 500));
+        await windowManager.minimize();
+      }
+    });
+  }
+}
+
 
 Widget keyListenerBuilder(BuildContext context, Widget? child) {
   return RawKeyboardListener(
