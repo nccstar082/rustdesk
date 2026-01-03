@@ -40,9 +40,10 @@ late List<String> kBootArgs;
 
 // 定义窗口尺寸常量（文件顶部）
 const double WINDOW_WIDTH = 800;
-// const double WINDOW_WIDTH = 220;
-const double WINDOW_HEIGHT = 495; 
+const double WINDOW_HEIGHT = 495;
 const Size WINDOW_SIZE = Size(WINDOW_WIDTH, WINDOW_HEIGHT);
+// 【修改1】添加主窗口ID常量定义（缺失导致语法错误）
+const int kWindowMainId = 0;
 
 Future<void> main(List<String> args) async {
   earlyAssert();
@@ -105,6 +106,7 @@ Future<void> main(List<String> args) async {
           argument,
           kAppTypeDesktopTerminal,
         );
+        break;
       default:
         break;
     }
@@ -155,9 +157,7 @@ void runMainApp(bool startService) async {
   await Future.wait([gFFI.abModel.loadCache(), gFFI.groupModel.loadCache()]);
   gFFI.userModel.refreshCurrentUser();
 
-
-  // 注册连接状态监听器以实现连接成功后最小化
-  _setupConnectionStatusListener();
+  // 【修改2】删除未定义的 _setupConnectionStatusListener() 调用（核心语法错误）
 
   runApp(App());
 
@@ -171,12 +171,11 @@ void runMainApp(bool startService) async {
   WindowOptions windowOptions = getHiddenTitleBarWindowOptions(
       isMainWindow: true, alwaysOnTop: alwaysOnTop);
   windowManager.waitUntilReadyToShow(windowOptions, () async {
-  
-      // 强制设置窗口尺寸
-  await windowManager.setSize(WINDOW_SIZE);
-  await windowManager.setMinimumSize(WINDOW_SIZE);
-  await windowManager.setMaximumSize(WINDOW_SIZE);
-  
+    // 强制设置窗口尺寸
+    await windowManager.setSize(WINDOW_SIZE);
+    await windowManager.setMinimumSize(WINDOW_SIZE);
+    await windowManager.setMaximumSize(WINDOW_SIZE);
+
     // Restore the location of the main window before window hide or show.
     await restoreWindowPosition(WindowType.Main);
     // Check the startup argument, if we successfully handle the argument, we keep the main window hidden.
@@ -196,272 +195,6 @@ void runMainApp(bool startService) async {
     setResizable(!bind.isIncomingOnly());
   });
 }
-
-void runMobileApp() async {
-  await initEnv(kAppTypeMain);
-  checkUpdate();
-  if (isAndroid) androidChannelInit();
-  if (isAndroid) platformFFI.syncAndroidServiceAppDirConfigPath();
-  draggablePositions.load();
-  await Future.wait([gFFI.abModel.loadCache(), gFFI.groupModel.loadCache()]);
-  gFFI.userModel.refreshCurrentUser();
-  runApp(App());
-  await initUniLinks();
-}
-
-void runMultiWindow(
-  Map<String, dynamic> argument,
-  String appType,
-) async {
-  await initEnv(appType);
-  final title = getWindowName();
-  // set prevent close to true, we handle close event manually
-  WindowController.fromWindowId(kWindowId!).setPreventClose(true);
-  if (isMacOS) {
-    disableWindowMovable(kWindowId);
-  }
-  late Widget widget;
-  switch (appType) {
-    case kAppTypeDesktopRemote:
-      draggablePositions.load();
-      widget = DesktopRemoteScreen(
-        params: argument,
-      );
-      break;
-    case kAppTypeDesktopFileTransfer:
-      widget = DesktopFileTransferScreen(
-        params: argument,
-      );
-      break;
-    case kAppTypeDesktopViewCamera:
-      draggablePositions.load();
-      widget = DesktopViewCameraScreen(
-        params: argument,
-      );
-      break;
-    case kAppTypeDesktopPortForward:
-      widget = DesktopPortForwardScreen(
-        params: argument,
-      );
-      break;
-    case kAppTypeDesktopTerminal:
-      widget = DesktopTerminalScreen(
-        params: argument,
-      );
-      break;
-    default:
-      // no such appType
-      exit(0);
-  }
-  _runApp(
-    title,
-    widget,
-    MyTheme.currentThemeMode(),
-  );
-  // we do not hide titlebar on win7 because of the frame overflow.
-  if (kUseCompatibleUiMode) {
-    WindowController.fromWindowId(kWindowId!).showTitleBar(true);
-  }
-  switch (appType) {
-    case kAppTypeDesktopRemote:
-      // If screen rect is set, the window will be moved to the target screen and then set fullscreen.
-      if (argument['screen_rect'] == null) {
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:bot_toast/bot_toast.dart';
-import 'package:desktop_multi_window/desktop_multi_window.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_hbb/common/widgets/overlay.dart';
-import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
-import 'package:flutter_hbb/desktop/pages/install_page.dart';
-import 'package:flutter_hbb/desktop/pages/server_page.dart';
-import 'package:flutter_hbb/desktop/screen/desktop_file_transfer_screen.dart';
-import 'package:flutter_hbb/desktop/screen/desktop_view_camera_screen.dart';
-import 'package:flutter_hbb/desktop/screen/desktop_port_forward_screen.dart';
-import 'package:flutter_hbb/desktop/screen/desktop_remote_screen.dart';
-import 'package:flutter_hbb/desktop/screen/desktop_terminal_screen.dart';
-import 'package:flutter_hbb/desktop/widgets/refresh_wrapper.dart';
-import 'package:flutter_hbb/models/state_model.dart';
-import 'package:flutter_hbb/utils/multi_window_manager.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
-import 'package:get/get.dart';
-import 'package:provider/provider.dart';
-import 'package:window_manager/window_manager.dart';
-
-import 'common.dart';
-import 'consts.dart';
-import 'desktop/window_minimize_on_connect.dart';
-import 'mobile/pages/home_page.dart';
-import 'mobile/pages/server_page.dart';
-import 'models/platform_model.dart';
-
-import 'package:flutter_hbb/plugin/handlers.dart'
-    if (dart.library.html) 'package:flutter_hbb/web/plugin/handlers.dart';
-
-/// Basic window and launch properties.
-int? kWindowId;
-WindowType? kWindowType;
-late List<String> kBootArgs;
-
-// 定义窗口尺寸常量（文件顶部）
-const double WINDOW_WIDTH = 800;
-// const double WINDOW_WIDTH = 220;
-const double WINDOW_HEIGHT = 495; 
-const Size WINDOW_SIZE = Size(WINDOW_WIDTH, WINDOW_HEIGHT);
-
-Future<void> main(List<String> args) async {
-  earlyAssert();
-  WidgetsFlutterBinding.ensureInitialized();
-
-  debugPrint("launch args: $args");
-  kBootArgs = List.from(args);
-
-  if (!isDesktop) {
-    runMobileApp();
-    return;
-  }
-  // main window
-  if (args.isNotEmpty && args.first == 'multi_window') {
-    kWindowId = int.parse(args[1]);
-    stateGlobal.setWindowId(kWindowId!);
-    if (!isMacOS) {
-      WindowController.fromWindowId(kWindowId!).showTitleBar(false);
-    }
-    final argument = args[2].isEmpty
-        ? <String, dynamic>{}
-        : jsonDecode(args[2]) as Map<String, dynamic>;
-    int type = argument['type'] ?? -1;
-    // to-do: No need to parse window id ?
-    // Because stateGlobal.windowId is a global value.
-    argument['windowId'] = kWindowId;
-    kWindowType = type.windowType;
-    switch (kWindowType) {
-      case WindowType.RemoteDesktop:
-        desktopType = DesktopType.remote;
-        runMultiWindow(
-          argument,
-          kAppTypeDesktopRemote,
-        );
-        break;
-      case WindowType.FileTransfer:
-        desktopType = DesktopType.fileTransfer;
-        runMultiWindow(
-          argument,
-          kAppTypeDesktopFileTransfer,
-        );
-        break;
-      case WindowType.ViewCamera:
-        desktopType = DesktopType.viewCamera;
-        runMultiWindow(
-          argument,
-          kAppTypeDesktopViewCamera,
-        );
-        break;
-      case WindowType.PortForward:
-        desktopType = DesktopType.portForward;
-        runMultiWindow(
-          argument,
-          kAppTypeDesktopPortForward,
-        );
-        break;
-      case WindowType.Terminal:
-        desktopType = DesktopType.terminal;
-        runMultiWindow(
-          argument,
-          kAppTypeDesktopTerminal,
-        );
-      default:
-        break;
-    }
-  } else if (args.isNotEmpty && args.first == '--cm') {
-    debugPrint("--cm started");
-    desktopType = DesktopType.cm;
-    await windowManager.ensureInitialized();
-    runConnectionManagerScreen();
-  } else if (args.contains('--install')) {
-    runInstallPage();
-  } else {
-    desktopType = DesktopType.main;
-    await windowManager.ensureInitialized();
-    windowManager.setPreventClose(true);
-    if (isMacOS) {
-      disableWindowMovable(kWindowId);
-    }
-    runMainApp(true);
-  }
-}
-
-Future<void> initEnv(String appType) async {
-  // global shared preference
-  await platformFFI.init(appType);
-  // global FFI, use this **ONLY** for global configuration
-  // for convenience, use global FFI on mobile platform
-  // focus on multi-ffi on desktop first
-  await initGlobalFFI();
-  // await Firebase.initializeApp();
-  _registerEventHandler();
-  // 初始化窗口最小化功能
-  await WindowMinimizeOnConnect.initialize();
-  // Update the system theme.
-  updateSystemWindowTheme();
-}
-
-// ... existing code ...
-void runMainApp(bool startService) async {
-  // register uni links
-  await initEnv(kAppTypeMain);
-  checkUpdate();
-  // trigger connection status updater
-  await bind.mainCheckConnectStatus();
-  if (startService) {
-    gFFI.serverModel.startService();
-    bind.pluginSyncUi(syncTo: kAppTypeMain);
-    bind.pluginListReload();
-  }
-  await Future.wait([gFFI.abModel.loadCache(), gFFI.groupModel.loadCache()]);
-  gFFI.userModel.refreshCurrentUser();
-  
-  runApp(App());
-
-  bool? alwaysOnTop;
-  if (isDesktop) {
-    alwaysOnTop =
-        bind.mainGetBuildinOption(key: "main-window-always-on-top") == 'Y';
-  }
-
-  // Set window option.
-  WindowOptions windowOptions = getHiddenTitleBarWindowOptions(
-      isMainWindow: true, alwaysOnTop: alwaysOnTop);
-  windowManager.waitUntilReadyToShow(windowOptions, () async {
-  
-      // 强制设置窗口尺寸
-  await windowManager.setSize(WINDOW_SIZE);
-  await windowManager.setMinimumSize(WINDOW_SIZE);
-  await windowManager.setMaximumSize(WINDOW_SIZE);
-  
-    // Restore the location of the main window before window hide or show.
-    await restoreWindowPosition(WindowType.Main);
-    // Check the startup argument, if we successfully handle the argument, we keep the main window hidden.
-    final handledByUniLinks = await initUniLinks();
-    debugPrint("handled by uni links: $handledByUniLinks");
-    if (handledByUniLinks || handleUriLink(cmdArgs: kBootArgs)) {
-      windowManager.hide();
-    } else {
-      windowManager.show();
-      windowManager.focus();
-      // Move registration of active main window here to prevent from async visible check.
-      rustDeskWinManager.registerActiveWindow(kWindowMainId);
-    }
-    windowManager.setOpacity(1);
-    windowManager.setTitle(getWindowName());
-    // Do not use `windowManager.setResizable()` here.
-    setResizable(!bind.isIncomingOnly());
-  });
-}
-// ... existing code ...
 
 void runMobileApp() async {
   await initEnv(kAppTypeMain);
@@ -682,8 +415,8 @@ WindowOptions getHiddenTitleBarWindowOptions(
   if (kUseCompatibleUiMode) {
     defaultTitleBarStyle = TitleBarStyle.normal;
   }
-  
-        // 主窗口强制设置固定尺寸
+
+  // 主窗口强制设置固定尺寸
   if (isMainWindow) {
     size = WINDOW_SIZE; // 覆盖所有传入的size参数
   }
@@ -692,8 +425,7 @@ WindowOptions getHiddenTitleBarWindowOptions(
     size: size,
     minimumSize: WINDOW_SIZE, // 最小尺寸
     maximumSize: WINDOW_SIZE, // 最大尺寸
-//    resizable: false, // 完全禁用窗口调节
-
+    // resizable: false, // 完全禁用窗口调节
     center: center,
     backgroundColor: (isMacOS && isMainWindow) ? null : Colors.transparent,
     skipTaskbar: true,
@@ -837,8 +569,8 @@ Widget _keepScaleBuilder(BuildContext context, Widget? child) {
   );
 }
 
-// ... existing code ...
-_registerEventHandler() {
+// 【修改3】添加void返回类型，规范函数定义
+void _registerEventHandler() {
   if (isDesktop && desktopType != DesktopType.main) {
     platformFFI.registerEventHandler('theme', 'theme', (evt) async {
       String? dark = evt['dark'];
@@ -856,13 +588,13 @@ _registerEventHandler() {
     platformFFI.registerEventHandler('native_ui', 'native_ui', (evt) async {
       NativeUiHandler.instance.onEvent(evt);
     });
-    
+
     // 带日志的连接成功最小化主窗口逻辑
     platformFFI.registerEventHandler('session', 'session', (evt) async {
       try {
         // ===== 日志1：打印接收到的原始事件 =====
         debugPrint("【RustDesk日志】接收到session事件：${jsonEncode(evt)}，子窗口ID：$kWindowId");
-        
+
         // 精准匹配连接成功事件
         final String? event = evt['event'];
         if (event != 'connect_success' && event != 'on_session_connected') {
@@ -881,7 +613,7 @@ _registerEventHandler() {
         final isMainVisible = await mainWindow.isVisible();
         final isMainMinimized = await mainWindow.isMinimized();
         debugPrint("【RustDesk日志】主窗口状态 - 可见：$isMainVisible，已最小化：$isMainMinimized");
-        
+
         // 执行最小化
         if (isMainVisible && !isMainMinimized) {
           await Future.delayed(const Duration(milliseconds: 500));
@@ -897,7 +629,6 @@ _registerEventHandler() {
     });
   }
 }
-// ... existing code ....
 
 Widget keyListenerBuilder(BuildContext context, Widget? child) {
   return RawKeyboardListener(
@@ -914,4 +645,3 @@ Widget keyListenerBuilder(BuildContext context, Widget? child) {
     },
   );
 }
-
