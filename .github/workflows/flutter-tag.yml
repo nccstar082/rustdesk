@@ -12,8 +12,7 @@ on:
 jobs:
   run-flutter-tag-build:
     uses: ./.github/workflows/flutter-build.yml
-    secrets:
-      PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+    secrets: inherit
     with:
       upload-artifact: true
       upload-tag: ${{ github.ref_name }}

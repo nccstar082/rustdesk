@@ -736,5 +736,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("rel-mouse-lock-failed-tip", "无法锁定鼠标，相对鼠标模式已禁用"),
         ("rel-mouse-exit-{}-tip", "按下 {} 退出"),
         ("rel-mouse-permission-lost-tip", "键盘权限被撤销。相对鼠标模式已被禁用。"),
+        ("Changelog", "更新日志"),
+        ("keep-awake-during-outgoing-sessions-label", ""),
+        ("keep-awake-during-incoming-sessions-label", ""),
     ].iter().cloned().collect();
 }
