@@ -17,7 +17,7 @@ env:
   TAG_NAME: "nightly"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
-  VERSION: "1.4.5"
+  VERSION: "1.4.4"
   NDK_VERSION: "r26d"
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
@@ -90,7 +90,7 @@ jobs:
         with:
           ref: ${{ matrix.job.ref }}
           submodules: recursive
-          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
 
       - name: Import the codesign cert
         if: env.MACOS_P12_BASE64 != null
@@ -252,7 +252,7 @@ jobs:
         with:
           ref: ${{ matrix.job.ref }}
           submodules: recursive
-          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
 
       - name: Install dependencies
         run: |
