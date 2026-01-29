@@ -90,6 +90,7 @@ jobs:
         with:
           ref: ${{ matrix.job.ref }}
           submodules: recursive
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
 
       - name: Import the codesign cert
         if: env.MACOS_P12_BASE64 != null
@@ -251,6 +252,7 @@ jobs:
         with:
           ref: ${{ matrix.job.ref }}
           submodules: recursive
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
 
       - name: Install dependencies
         run: |
