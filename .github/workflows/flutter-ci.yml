@@ -20,6 +20,7 @@ on:
 jobs:
   run-ci:
     uses: ./.github/workflows/flutter-build.yml
-    secrets: inherit
+    secrets:
+      PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
     with:
       upload-artifact: false
