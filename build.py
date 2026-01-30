@@ -368,13 +368,12 @@ def build_flutter_deb(version, features):
 
     system2('/bin/rm -rf tmpdeb/')
     system2('/bin/rm -rf ../res/DEBIAN/control')
-    os.rename('rustdesk.deb', f'../rustdesk-{version}-{timestamp}.deb')
+    os.rename('rustdesk.deb', '../rustdesk-%s.deb' % version)
     os.chdir("..")
 
 
 def build_deb_from_folder(version, binary_folder):
     os.chdir('flutter')
-    timestamp = get_build_timestamp()
     system2('mkdir -p tmpdeb/usr/bin/')
     system2('mkdir -p tmpdeb/usr/share/rustdesk')
     system2('mkdir -p tmpdeb/usr/share/rustdesk/files/systemd/')
@@ -406,7 +405,7 @@ def build_deb_from_folder(version, binary_folder):
 
     system2('/bin/rm -rf tmpdeb/')
     system2('/bin/rm -rf ../res/DEBIAN/control')
-    os.rename('rustdesk.deb', f'../rustdesk-{version}-{timestamp}.deb')
+    os.rename('rustdesk.deb', '../rustdesk-%s.deb' % version)
     os.chdir("..")
 
 
@@ -469,9 +468,9 @@ def build_flutter_windows(version, features, skip_portable_pack):
                   './rustdesk_portable.exe')
     print(
         f'output location: {os.path.abspath(os.curdir)}/rustdesk_portable.exe')
-    os.rename('./rustdesk_portable.exe', f'./rustdesk-{version}-{timestamp}-install.exe')
+    os.rename('./rustdesk_portable.exe', f'./rustdesk-{version}-install.exe')
     print(
-        f'output location: {os.path.abspath(os.curdir)}/rustdesk-{version}-{timestamp}-install.exe')
+        f'output location: {os.path.abspath(os.curdir)}/rustdesk-{version}-install.exe')
 
 
 def main():
