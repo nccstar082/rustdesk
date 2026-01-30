@@ -21,6 +21,8 @@ import 'package:visibility_detector/visibility_detector.dart';
 
 import '../../utils/multi_window_manager.dart';
 
+const String buildTimestamp = String.fromEnvironment('BUILD_TIMESTAMP', defaultValue: '');
+
 const double _kTabBarHeight = kDesktopRemoteTabBarHeight;
 const double _kIconSize = 18;
 const double _kDividerIndent = 10;
@@ -639,8 +641,8 @@ class _DesktopTabState extends State<DesktopTab>
                         ),
                         Offstage(
                             offstage: !showTitle,
-                            child: const Text(
-                              "RustDesk-1.4.5",
+                            child: Text(
+                              buildTimestamp.isEmpty ? "RustDesk-1.4.5" : "RustDesk-1.4.5($buildTimestamp)",
                               style: TextStyle(fontSize: 13),
                             ).marginOnly(left: 2))
                       ]).marginOnly(
