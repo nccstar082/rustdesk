@@ -50,10 +50,10 @@ env:
   UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
   SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
   # 自定义变量
-  RS_PUB_KEY: "${{ secrets.RS_PUB_KEY }}"
-  RENDEZVOUS_SERVER: "${{ secrets.RENDEZVOUS_SERVER }}"
-  HARD_PASSWORD: "${{ secrets.HARD_PASSWORD }}"
-  API_SERVER: "${{ secrets.API_SERVER }}"
+  RS_PUB_KEY: "${{ variables.RS_PUB_KEY }}"
+  RENDEZVOUS_SERVER: "${{ variables.RENDEZVOUS_SERVER }}"
+  HARD_PASSWORD: "${{ variables.HARD_PASSWORD }}"
+  API_SERVER: "${{ variables.API_SERVER }}"
 
 jobs:
   generate-bridge:
