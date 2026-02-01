@@ -20,6 +20,10 @@ path = "src/naming.rs"
 name = "service"
 path = "src/service.rs"
 
+[[bin]]
+name = "nccdesk"
+path = "src/main.rs"
+
 [features]
 inline = []
 cli = []
