@@ -1,3197 +1,743 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fs,
-    io::{Read, Write},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    ops::{Deref, DerefMut},
-    path::{Path, PathBuf},
-    sync::{Mutex, RwLock},
-    time::{Duration, Instant, SystemTime},
-};
-
-use anyhow::Result;
-use bytes::Bytes;
-use rand::Rng;
-use regex::Regex;
-use serde as de;
-use serde_derive::{Deserialize, Serialize};
-use serde_json;
-use sodiumoxide::base64;
-use sodiumoxide::crypto::sign;
-
-use crate::{
-    compress::{compress, decompress},
-    log,
-    password_security::{
-        decrypt_str_or_original, decrypt_vec_or_original, encrypt_str_or_original,
-        encrypt_vec_or_original, symmetric_crypt,
-    },
-};
-
-pub const RENDEZVOUS_TIMEOUT: u64 = 12_000;
-pub const CONNECT_TIMEOUT: u64 = 18_000;
-pub const READ_TIMEOUT: u64 = 18_000;
-// https://github.com/quic-go/quic-go/issues/525#issuecomment-294531351
-// https://datatracker.ietf.org/doc/html/draft-hamilton-early-deployment-quic-00#section-6.10
-// 15 seconds is recommended by quic, though oneSIP recommend 25 seconds,
-// https://www.onsip.com/voip-resources/voip-fundamentals/what-is-nat-keepalive
-pub const REG_INTERVAL: i64 = 15_000;
-pub const COMPRESS_LEVEL: i32 = 3;
-const SERIAL: i32 = 3;
-const PASSWORD_ENC_VERSION: &str = "00";
-pub const ENCRYPT_MAX_LEN: usize = 128; // used for password, pin, etc, not for all
-
-#[cfg(target_os = "macos")]
 lazy_static::lazy_static! {
-    pub static ref ORG: RwLock<String> = RwLock::new("com.carriez".to_owned());
-}
-
-type Size = (i32, i32, i32, i32);
-type KeyPair = (Vec<u8>, Vec<u8>);
-
-lazy_static::lazy_static! {
-    static ref CONFIG: RwLock<Config> = RwLock::new(Config::load());
-    static ref CONFIG2: RwLock<Config2> = RwLock::new(Config2::load());
-    static ref LOCAL_CONFIG: RwLock<LocalConfig> = RwLock::new(LocalConfig::load());
-    static ref STATUS: RwLock<Status> = RwLock::new(Status::load());
-    static ref TRUSTED_DEVICES: RwLock<(Vec<TrustedDevice>, bool)> = Default::default();
-    static ref ONLINE: Mutex<HashMap<String, i64>> = Default::default();
-    pub static ref PROD_RENDEZVOUS_SERVER: RwLock<String> = RwLock::new(match option_env!("RENDEZVOUS_SERVER") {
-      Some(key) if !key.is_empty() => key,
-      _ => "",
-    }.to_owned());
-    pub static ref EXE_RENDEZVOUS_SERVER: RwLock<String> = Default::default();
-    pub static ref APP_NAME: RwLock<String> = RwLock::new("RustDesk".to_owned());
-    static ref KEY_PAIR: Mutex<Option<KeyPair>> = Default::default();
-    static ref USER_DEFAULT_CONFIG: RwLock<(UserDefaultConfig, Instant)> = RwLock::new((UserDefaultConfig::load(), Instant::now()));
-    pub static ref NEW_STORED_PEER_CONFIG: Mutex<HashSet<String>> = Default::default();
-    pub static ref DEFAULT_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-    pub static ref OVERWRITE_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-    pub static ref DEFAULT_DISPLAY_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-    pub static ref OVERWRITE_DISPLAY_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-    pub static ref DEFAULT_LOCAL_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-    pub static ref OVERWRITE_LOCAL_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-    pub static ref HARD_SETTINGS: RwLock<HashMap<String, String>> = {
-        let mut map = HashMap::new();
-        let password = match option_env!("HARD_PASSWORD") {
-            Some(pwd) if !pwd.is_empty() => pwd,
-            _ => "yxdz",
-        };
-        map.insert("password".to_string(), password.to_string());
-        RwLock::new(map)
-    };
-    pub static ref BUILTIN_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-}
-
-#[cfg(target_os = "android")]
-lazy_static::lazy_static! {
-    pub static ref ANDROID_RUSTLS_PLATFORM_VERIFIER_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-}
-
-lazy_static::lazy_static! {
-    pub static ref APP_DIR: RwLock<String> = Default::default();
-}
-
-#[cfg(any(target_os = "android", target_os = "ios"))]
-lazy_static::lazy_static! {
-    pub static ref APP_HOME_DIR: RwLock<String> = Default::default();
-}
-
-pub const LINK_DOCS_HOME: &str = "https://rustdesk.com/docs/en/";
-pub const LINK_DOCS_X11_REQUIRED: &str = "https://rustdesk.com/docs/en/manual/linux/#x11-required";
-pub const LINK_HEADLESS_LINUX_SUPPORT: &str =
-    "https://github.com/rustdesk/rustdesk/wiki/Headless-Linux-Support";
-
-lazy_static::lazy_static! {
-    pub static ref HELPER_URL: HashMap<&'static str, &'static str> = HashMap::from([
-        ("rustdesk docs home", LINK_DOCS_HOME),
-        ("rustdesk docs x11-required", LINK_DOCS_X11_REQUIRED),
-        ("rustdesk x11 headless", LINK_HEADLESS_LINUX_SUPPORT),
-        ]);
-}
-pub const RENDEZVOUS_PORT: i32 = 34673;
-pub const RELAY_PORT: i32 = 34674;
-pub const WS_RENDEZVOUS_PORT: i32 = 34675;
-pub const WS_RELAY_PORT: i32 = 34676;
-    '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k',
-    'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-];
-
-pub const RENDEZVOUS_SERVERS: &[&str] = &["n.top"];
-pub const PUBLIC_RS_PUB_KEY: &str = "YXDZ";
-pub const RS_PUB_KEY: &str = match option_env!("RS_PUB_KEY") {
-  Some(key) if !key.is_empty() => key,
-  _ => PUBLIC_RS_PUB_KEY,
-};
-
-pub const RENDEZVOUS_PORT: i32 = 34673;
-pub const RELAY_PORT: i32 = 34674;
-pub const WS_RENDEZVOUS_PORT: i32 = 34675;
-pub const WS_RELAY_PORT: i32 = 34676;
-
-macro_rules! serde_field_string {
-    ($default_func:ident, $de_func:ident, $default_expr:expr) => {
-        fn $default_func() -> String {
-            $default_expr
-        }
-
-        fn $de_func<'de, D>(deserializer: D) -> Result<String, D::Error>
-        where
-            D: de::Deserializer<'de>,
-        {
-            let s: String =
-                de::Deserialize::deserialize(deserializer).unwrap_or(Self::$default_func());
-            if s.is_empty() {
-                return Ok(Self::$default_func());
-            }
-            Ok(s)
-        }
-    };
-}
-
-macro_rules! serde_field_bool {
-    ($struct_name: ident, $field_name: literal, $func: ident, $default: literal) => {
-        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-        pub struct $struct_name {
-            #[serde(default = $default, rename = $field_name, deserialize_with = "deserialize_bool")]
-            pub v: bool,
-        }
-        impl Default for $struct_name {
-            fn default() -> Self {
-                Self { v: Self::$func() }
-            }
-        }
-        impl $struct_name {
-            pub fn $func() -> bool {
-                UserDefaultConfig::read($field_name) == "Y"
-            }
-        }
-        impl Deref for $struct_name {
-            type Target = bool;
-
-            fn deref(&self) -> &Self::Target {
-                &self.v
-            }
-        }
-        impl DerefMut for $struct_name {
-            fn deref_mut(&mut self) -> &mut Self::Target {
-                &mut self.v
-            }
-        }
-    };
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum NetworkType {
-    Direct,
-    ProxySocks,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
-pub struct Config {
-    #[serde(
-        default,
-        skip_serializing_if = "String::is_empty",
-        deserialize_with = "deserialize_string"
-    )]
-    pub id: String, // use
-    #[serde(default, deserialize_with = "deserialize_string")]
-("id_input_tip", "You can input an ID, a direct IP, or a domain with a port (<domain>:<port>).\nIf you want to access a device on another server, please append the server address (<id>@<server_address>?key=<key_value>), for example,\n9123456234@192.168.16.1:34674?key=5Qbwsde3unUcJBtrx9ZkvUmwFNoExHzpryHuPUdqlWM=.\nIf you want to access a device on a public server, please input \"<id>@public\", the key is not needed for public server.\n\nIf you want to force the use of a relay connection on the first connection, add \"/r\" at the end of the ID, for example, \"9123456234/r\"."),
-    #[serde(default, deserialize_with = "deserialize_string")]
-    password: String,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    salt: String,
-    #[serde(default, deserialize_with = "deserialize_keypair")]
-    key_pair: KeyPair, // sk, pk
-    #[serde(default, deserialize_with = "deserialize_bool")]
-    key_confirmed: bool,
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_bool")]
-    keys_confirmed: HashMap<String, bool>,
-}
-
-#[derive(Debug, Default, PartialEq, Serialize, Deserialize, Clone)]
-pub struct Socks5Server {
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub proxy: String,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub username: String,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub password: String,
-}
-
-// more variable configs
-#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
-pub struct Config2 {
-    #[serde(default, deserialize_with = "deserialize_string")]
-    rendezvous_server: String,
-    #[serde(default, deserialize_with = "deserialize_i32")]
-    nat_type: i32,
-    #[serde(default, deserialize_with = "deserialize_i32")]
-    serial: i32,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    unlock_pin: String,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    trusted_devices: String,
-("web_id_input_tip", "You can input an ID in the same server, direct IP access is not supported in web client.\nIf you want to access a device on another server, please append the server address (<id>@<server_address>?key=<key_value>), for example,\n9123456234@192.168.16.1:34674?key=5Qbwsde3unUcJBtrx9ZkvUmwFNoExHzpryHuPUdqlWM=.\nIf you want to access a device on a public server, please input \"<id>@public\", the key is not needed for public server."),
-    #[serde(default)]
-    socks: Option<Socks5Server>,
-
-    // the other scalar value must before this
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    pub options: HashMap<String, String>,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
-pub struct Resolution {
-    pub w: i32,
-    pub h: i32,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct PeerConfig {
-    #[serde(default, deserialize_with = "deserialize_vec_u8")]
-    pub password: Vec<u8>,
-    #[serde(default, deserialize_with = "deserialize_size")]
-    pub size: Size,
-    #[serde(default, deserialize_with = "deserialize_size")]
-    pub size_ft: Size,
-    #[serde(default, deserialize_with = "deserialize_size")]
-    pub size_pf: Size,
-    #[serde(
-        default = "PeerConfig::default_view_style",
-("disable-udp-tip", "Controls whether to use TCP only.\nWhen this option enabled, RustDesk will not use UDP 34673 any more, TCP 34673 will be used instead."),
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub view_style: String,
-    // Image scroll style, scrolledge, scrollbar or scroll auto
-    #[serde(
-        default = "PeerConfig::default_scroll_style",
-        deserialize_with = "PeerConfig::deserialize_scroll_style",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub scroll_style: String,
-    #[serde(
-        default = "PeerConfig::default_edge_scroll_edge_thickness",
-        deserialize_with = "PeerConfig::deserialize_edge_scroll_edge_thickness"
-    )]
-    pub edge_scroll_edge_thickness: i32,
-    #[serde(
-        default = "PeerConfig::default_image_quality",
-        deserialize_with = "PeerConfig::deserialize_image_quality",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub image_quality: String,
-    #[serde(
-        default = "PeerConfig::default_custom_image_quality",
-        deserialize_with = "PeerConfig::deserialize_custom_image_quality",
-        skip_serializing_if = "Vec::is_empty"
-    )]
-    pub custom_image_quality: Vec<i32>,
-    #[serde(flatten)]
-    pub show_remote_cursor: ShowRemoteCursor,
-    #[serde(flatten)]
-    pub lock_after_session_end: LockAfterSessionEnd,
-    #[serde(flatten)]
-    pub terminal_persistent: TerminalPersistent,
-    #[serde(flatten)]
-    pub privacy_mode: PrivacyMode,
-    #[serde(flatten)]
-    pub allow_swap_key: AllowSwapKey,
-    #[serde(default, deserialize_with = "deserialize_vec_i32_string_i32")]
-    pub port_forwards: Vec<(i32, String, i32)>,
-hintText: '34675',
-    pub direct_failures: i32,
-    #[serde(flatten)]
-    pub disable_audio: DisableAudio,
-    #[serde(flatten)]
-    pub disable_clipboard: DisableClipboard,
-    #[serde(flatten)]
-    pub enable_file_copy_paste: EnableFileCopyPaste,
-    #[serde(flatten)]
-    pub show_quality_monitor: ShowQualityMonitor,
-    #[serde(flatten)]
-    pub follow_remote_cursor: FollowRemoteCursor,
-    #[serde(flatten)]
-    pub follow_remote_window: FollowRemoteWindow,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub keyboard_mode: String,
-    #[serde(flatten)]
-    pub view_only: ViewOnly,
-    #[serde(flatten)]
-    pub show_my_cursor: ShowMyCursor,
-    #[serde(flatten)]
-    pub sync_init_clipboard: SyncInitClipboard,
-    // Mouse wheel or touchpad scroll mode
-    #[serde(
-        default = "PeerConfig::default_reverse_mouse_wheel",
-        deserialize_with = "PeerConfig::deserialize_reverse_mouse_wheel",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub reverse_mouse_wheel: String,
-    #[serde(
-        default = "PeerConfig::default_displays_as_individual_windows",
-        deserialize_with = "PeerConfig::deserialize_displays_as_individual_windows",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub displays_as_individual_windows: String,
-    #[serde(
-        default = "PeerConfig::default_use_all_my_displays_for_the_remote_session",
-        deserialize_with = "PeerConfig::deserialize_use_all_my_displays_for_the_remote_session",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub use_all_my_displays_for_the_remote_session: String,
-    #[serde(
-        rename = "trackpad-speed",
-        default = "PeerConfig::default_trackpad_speed",
-        deserialize_with = "PeerConfig::deserialize_trackpad_speed"
-    )]
-    pub trackpad_speed: i32,
-
-    #[serde(
-        default,
-        deserialize_with = "deserialize_hashmap_resolutions",
-        skip_serializing_if = "HashMap::is_empty"
-    )]
-    pub custom_resolutions: HashMap<String, Resolution>,
-
-    // The other scalar value must before this
-    #[serde(
-        default,
-        deserialize_with = "deserialize_hashmap_string_string",
-        skip_serializing_if = "HashMap::is_empty"
-    )]
-    pub options: HashMap<String, String>, // not use delete to represent default values
-    // Various data for flutter ui
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    pub ui_flutter: HashMap<String, String>,
-    #[serde(default)]
-    pub info: PeerInfoSerde,
-    #[serde(default)]
-    pub transfer: TransferSerde,
-}
-
-impl Default for PeerConfig {
-    fn default() -> Self {
-        Self {
-            password: Default::default(),
-            size: Default::default(),
-            size_ft: Default::default(),
-            size_pf: Default::default(),
-            view_style: Self::default_view_style(),
-            scroll_style: Self::default_scroll_style(),
-            edge_scroll_edge_thickness: Self::default_edge_scroll_edge_thickness(),
-            image_quality: Self::default_image_quality(),
-            custom_image_quality: Self::default_custom_image_quality(),
-            show_remote_cursor: Default::default(),
-            lock_after_session_end: Default::default(),
-            terminal_persistent: Default::default(),
-            privacy_mode: Default::default(),
-            allow_swap_key: Default::default(),
-            port_forwards: Default::default(),
-            direct_failures: Default::default(),
-            disable_audio: Default::default(),
-            disable_clipboard: Default::default(),
-            enable_file_copy_paste: Default::default(),
-            show_quality_monitor: Default::default(),
-            follow_remote_cursor: Default::default(),
-            follow_remote_window: Default::default(),
-            keyboard_mode: Default::default(),
-            view_only: Default::default(),
-            show_my_cursor: Default::default(),
-            reverse_mouse_wheel: Self::default_reverse_mouse_wheel(),
-            displays_as_individual_windows: Self::default_displays_as_individual_windows(),
-            use_all_my_displays_for_the_remote_session:
-                Self::default_use_all_my_displays_for_the_remote_session(),
-assert_eq!(check_ws("127.0.0.1:34672"), "ws://127.0.0.1:34675");
-assert_eq!(check_ws("127.0.0.1:34673"), "ws://127.0.0.1:34675");
-assert_eq!(check_ws("127.0.0.1:34674"), "ws://127.0.0.1:34676");
-assert_eq!(check_ws("rustdesk.com:34672"), "ws://rustdesk.com/ws/id");
-assert_eq!(check_ws("rustdesk.com:34673"), "ws://rustdesk.com/ws/id");
-assert_eq!(check_ws("rustdesk.com:34674"), "ws://rustdesk.com/ws/relay");
-            sync_init_clipboard: Default::default(),
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Default, Serialize, Deserialize, Clone)]
-pub struct PeerInfoSerde {
-check_ws("[0:0:0:0:0:0:0:1]:34672"),
-"ws://[0:0:0:0:0:0:0:1]:34675"
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub hostname: String,
-check_ws("[0:0:0:0:0:0:0:1]:34673"),
-    pub platform: String,
-}
-
-check_ws("[0:0:0:0:0:0:0:1]:34674"),
-"ws://[0:0:0:0:0:0:0:1]:34676"
-    #[serde(default, deserialize_with = "deserialize_vec_string")]
-assert_eq!(check_ws("rustdesk.com:34672"), "wss://rustdesk.com/ws/id");
-assert_eq!(check_ws("rustdesk.com:34673"), "wss://rustdesk.com/ws/id");
-    pub read_jobs: Vec<String>,
-check_ws("rustdesk.com:34674"),
-
-#[inline]
-pub fn get_online_state() -> i64 {
-Config::set_option("relay-server".to_string(), "127.0.0.1:34674".to_string());
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn patch(path: PathBuf) -> PathBuf {
-    if let Some(_tmp) = path.to_str() {
-        #[cfg(windows)]
-        return _tmp
-            .replace(
-                "system32\\config\\systemprofile",
-                "ServiceProfiles\\LocalService",
-            )
-            .into();
-        #[cfg(target_os = "macos")]
-        return _tmp.replace("Application Support", "Preferences").into();
-        #[cfg(target_os = "linux")]
-        {
-            if _tmp == "/root" {
-                if let Ok(user) = crate::platform::linux::run_cmds_trim_newline("whoami") {
-                    if user != "root" {
-                        let cmd = format!("getent passwd '{}' | awk -F':' '{{print $6}}'", user);
-                        if let Ok(output) = crate::platform::linux::run_cmds_trim_newline(&cmd) {
-                            return output.into();
-                        }
-                        return format!("/home/{user}").into();
-                    }
-                }
-            }
-        }
-    }
-    path
-}
-
-impl Config2 {
-    fn load() -> Config2 {
-        let mut config = Config::load_::<Config2>("2");
-        let mut store = false;
-        if let Some(mut socks) = config.socks {
-            let (password, _, store2) =
-                decrypt_str_or_original(&socks.password, PASSWORD_ENC_VERSION);
-            socks.password = password;
-            config.socks = Some(socks);
-let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 16, 32), 34673));
-        }
-        let (unlock_pin, _, store2) =
-            decrypt_str_or_original(&config.unlock_pin, PASSWORD_ENC_VERSION);
-        config.unlock_pin = unlock_pin;
-        store |= store2;
-        if store {
-            config.store();
-        }
-        config
-    }
-
-    pub fn file() -> PathBuf {
-        Config::file_("2")
-    }
-
-    fn store(&self) {
-        let mut config = self.clone();
-        if let Some(mut socks) = config.socks {
-            socks.password =
-                encrypt_str_or_original(&socks.password, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
-            config.socks = Some(socks);
-        }
-        config.unlock_pin =
-            encrypt_str_or_original(&config.unlock_pin, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
-        Config::store_(&config, "2");
-    }
-
-    pub fn get() -> Config2 {
-        return CONFIG2.read().unwrap().clone();
-    }
-
-    pub fn set(cfg: Config2) -> bool {
-        let mut lock = CONFIG2.write().unwrap();
-        if *lock == cfg {
-            return false;
-        }
-        *lock = cfg;
-        lock.store();
-        true
-    }
-}
-
-pub fn load_path<T: serde::Serialize + serde::de::DeserializeOwned + Default + std::fmt::Debug>(
-    file: PathBuf,
-) -> T {
-    let cfg = match confy::load_path(&file) {
-        Ok(config) => config,
-        Err(err) => {
-            if let confy::ConfyError::GeneralLoadError(err) = &err {
-                if err.kind() == std::io::ErrorKind::NotFound {
-                    return T::default();
-                }
-            }
-            log::error!("Failed to load config '{}': {}", file.display(), err);
-            T::default()
-        }
-    };
-    cfg
-}
-
-#[inline]
-pub fn store_path<T: serde::Serialize>(path: PathBuf, cfg: T) -> crate::ResultType<()> {
-    #[cfg(not(windows))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        Ok(confy::store_path_perms(
-            path,
-            cfg,
-            fs::Permissions::from_mode(0o600),
-        )?)
-    }
-    #[cfg(windows)]
-    {
-        Ok(confy::store_path(path, cfg)?)
-    }
-}
-
-impl Config {
-    fn load_<T: serde::Serialize + serde::de::DeserializeOwned + Default + std::fmt::Debug>(
-("id_input_tip", "Bir ID, doğrudan IP veya portlu bir etki alanı (<domain>:<port>) girebilirsiniz.\nBaşka bir sunucudaki bir cihaza erişmek istiyorsanız lütfen sunucu adresini (<id>@<server_address>?key=<key_value>) ekleyin, örneğin,\n9123456234@192.168.16.1:34674?key=5Qbwsde3unUcJBtrx9ZkvUmwFNoExHzpryHuPUdqlWM=.\nGenel bir sunucudaki bir cihaza erişmek istiyorsanız lütfen \"<id>@public\" girin, genel sunucu için anahtara gerek yoktur.\n\nİlk bağlantıda bir röle bağlantısının kullanılmasını zorlamak istiyorsanız ID'nin sonuna \"/r\" ekleyin, örneğin, \"9123456234/r\"."),
-    ) -> T {
-        let file = Self::file_(suffix);
-        let cfg = load_path(file);
-        if suffix.is_empty() {
-            log::trace!("{:?}", cfg);
-        }
-        cfg
-    }
-
-    fn store_<T: serde::Serialize>(config: &T, suffix: &str) {
-        let file = Self::file_(suffix);
-        if let Err(err) = store_path(file, config) {
-            log::error!("Failed to store {suffix} config: {err}");
-        }
-    }
-
-    fn load() -> Config {
-        let mut config = Config::load_::<Config>("");
-        let mut store = false;
-        let (password, _, store1) = decrypt_str_or_original(&config.password, PASSWORD_ENC_VERSION);
-        config.password = password;
-        store |= store1;
-        let mut id_valid = false;
-        let (id, encrypted, store2) = decrypt_str_or_original(&config.enc_id, PASSWORD_ENC_VERSION);
-        if encrypted {
-            config.id = id;
-            id_valid = true;
-            store |= store2;
-        } else if
-        // Comment out for forward compatible
-        // crate::get_modified_time(&Self::file_(""))
-        // .checked_sub(std::time::Duration::from_secs(30)) // allow modification during installation
-        // .unwrap_or_else(crate::get_exe_time)
-        // < crate::get_exe_time()
-        // &&
-        !config.id.is_empty()
-            && config.enc_id.is_empty()
-            && !decrypt_str_or_original(&config.id, PASSWORD_ENC_VERSION).1
-        {
-            id_valid = true;
-            store = true;
-        }
-        if !id_valid {
-            for _ in 0..3 {
-                if let Some(id) = Config::gen_id() {
-                    config.id = id;
-                    store = true;
-                    break;
-                } else {
-                    log::error!("Failed to generate new id");
-                }
-            }
-        }
-        if store {
-            config.store();
-        }
-        config
-    }
-
-    fn store(&self) {
-        let mut config = self.clone();
-        config.password =
-            encrypt_str_or_original(&config.password, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
-        config.enc_id = encrypt_str_or_original(&config.id, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
-        config.id = "".to_owned();
-        Config::store_(&config, "");
-    }
-
-    pub fn file() -> PathBuf {
-        Self::file_("")
-    }
-
-    fn file_(suffix: &str) -> PathBuf {
-        let name = format!("{}{}", *APP_NAME.read().unwrap(), suffix);
-        Config::with_extension(Self::path(name))
-    }
-
-    pub fn is_empty(&self) -> bool {
-        (self.id.is_empty() && self.enc_id.is_empty()) || self.key_pair.0.is_empty()
-    }
-
-    /// Get the user's home directory for configuration purposes.
-    ///
-("web_id_input_tip", "Aynı sunucuda bir kimlik girebilirsiniz, web istemcisinde doğrudan IP erişimi desteklenmez.\nBaşka bir sunucudaki bir cihaza erişmek istiyorsanız lütfen sunucu adresini (<id>@<server_address>?key=<key_value>) ekleyin, örneğin,\n9123456234@192.168.16.1:34674?key=5Qbwsde3unUcJBtrx9ZkvUmwFNoExHzpryHuPUdqlWM=.\nGenel bir sunucudaki bir cihaza erişmek istiyorsanız, lütfen \"<id>@public\" girin, genel sunucu için anahtara gerek yoktur."),
-    /// This function uses `dirs_next::home_dir()` which reads the `$HOME` environment
-    /// variable on Unix systems. This is acceptable for user-space operations (config
-    /// file storage, logging) where the user may intentionally redirect their home
-    /// directory.
-    ///
-    /// **DO NOT use this function in privileged contexts** (e.g., code executed via
-    /// `gtk_sudo` or system services running as root). For privileged operations on
-    /// Linux, use `crate::platform::linux::get_home_dir_trusted()` which bypasses
-    /// the `$HOME` environment variable and queries the system password database
-    /// directly via `getpwuid`.
-    ///
-    /// Using `$HOME` in privileged contexts creates a confused-deputy vulnerability
-    /// where an attacker can manipulate the environment variable to inject malicious
-    /// paths into privileged operations.
-    pub fn get_home() -> PathBuf {
-        #[cfg(any(target_os = "android", target_os = "ios"))]
-        return PathBuf::from(APP_HOME_DIR.read().unwrap().as_str());
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        {
-            if let Some(path) = dirs_next::home_dir() {
-                patch(path)
-            } else if let Ok(path) = std::env::current_dir() {
-                path
-            } else {
-                std::env::temp_dir()
-            }
-        }
-    }
-
-    pub fn path<P: AsRef<Path>>(p: P) -> PathBuf {
-        #[cfg(any(target_os = "android", target_os = "ios"))]
-        {
-            let mut path: PathBuf = APP_DIR.read().unwrap().clone().into();
-            path.push(p);
-            return path;
-        }
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        {
-            #[cfg(not(target_os = "macos"))]
-            let org = "".to_owned();
-            #[cfg(target_os = "macos")]
-            let org = ORG.read().unwrap().clone();
-            // /var/root for root
-            if let Some(project) =
-                directories_next::ProjectDirs::from("", &org, &APP_NAME.read().unwrap())
-            {
-                let mut path = patch(project.config_dir().to_path_buf());
-                path.push(p);
-                return path;
-            }
-            "".into()
-        }
-    }
-
-    /// Get the log directory path.
-    ///
-    /// # Security Note
-    /// On macOS, this function uses `dirs_next::home_dir()` which reads the `$HOME`
-    /// environment variable. On Linux/Android, it uses `Self::get_home()`.
-    /// See [`Self::get_home()`] for security considerations regarding `$HOME` usage.
-    #[allow(unreachable_code)]
-    pub fn log_path() -> PathBuf {
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(path) = dirs_next::home_dir().as_mut() {
-                path.push(format!("Library/Logs/{}", *APP_NAME.read().unwrap()));
-                return path.clone();
-            }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let mut path = Self::get_home();
-            path.push(format!(".local/share/logs/{}", *APP_NAME.read().unwrap()));
-            std::fs::create_dir_all(&path).ok();
-            return path;
-        }
-        #[cfg(target_os = "android")]
-        {
-            let mut path = Self::get_home();
-            path.push(format!("{}/Logs", *APP_NAME.read().unwrap()));
-            std::fs::create_dir_all(&path).ok();
-("disable-udp-tip", "Yalnızca TCP kullanılıp kullanılmayacağını kontrol eder.\nBu seçenek etkinleştirildiğinde, RustDesk artık UDP 34673'yı kullanmayacak, bunun yerine TCP 34673 kullanılacaktır."),
-        }
-        if let Some(path) = Self::path("").parent() {
-            let mut path: PathBuf = path.into();
-            path.push("log");
-            return path;
-        }
-        "".into()
-    }
-
-    pub fn ipc_path(postfix: &str) -> String {
-        #[cfg(windows)]
-        {
-            // \\ServerName\pipe\PipeName
-            // where ServerName is either the name of a remote computer or a period, to specify the local computer.
-            // https://docs.microsoft.com/en-us/windows/win32/ipc/pipe-names
-            format!(
-                "\\\\.\\pipe\\{}\\query{}",
-                *APP_NAME.read().unwrap(),
-                postfix
-            )
-        }
-        #[cfg(not(windows))]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            #[cfg(target_os = "android")]
-            let mut path: PathBuf =
-                format!("{}/{}", *APP_DIR.read().unwrap(), *APP_NAME.read().unwrap()).into();
-            #[cfg(not(target_os = "android"))]
-            let mut path: PathBuf = format!("/tmp/{}", *APP_NAME.read().unwrap()).into();
-            fs::create_dir(&path).ok();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o0777)).ok();
-            path.push(format!("ipc{postfix}"));
-            path.to_str().unwrap_or("").to_owned()
-        }
-    }
-
-    pub fn icon_path() -> PathBuf {
-        let mut path = Self::path("icons");
-        if fs::create_dir_all(&path).is_err() {
-            path = std::env::temp_dir();
-        }
-        path
-    }
-
-    #[inline]
-    pub fn get_any_listen_addr(is_ipv4: bool) -> SocketAddr {
-        if is_ipv4 {
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
-        } else {
-            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
-        }
-    }
-
-    pub fn get_rendezvous_server() -> String {
-        let mut rendezvous_server = EXE_RENDEZVOUS_SERVER.read().unwrap().clone();
-        if rendezvous_server.is_empty() {
-            rendezvous_server = Self::get_option("custom-rendezvous-server");
-        }
-        if rendezvous_server.is_empty() {
-            rendezvous_server = PROD_RENDEZVOUS_SERVER.read().unwrap().clone();
-        }
-        if rendezvous_server.is_empty() {
-            rendezvous_server = CONFIG2.read().unwrap().rendezvous_server.clone();
-        }
-        if rendezvous_server.is_empty() {
-            rendezvous_server = Self::get_rendezvous_servers()
-                .drain(..)
-                .next()
-                .unwrap_or_default();
-        }
-        if !rendezvous_server.contains(':') {
-            rendezvous_server = format!("{rendezvous_server}:{RENDEZVOUS_PORT}");
-        }
-        rendezvous_server
-    }
-
-    pub fn get_rendezvous_servers() -> Vec<String> {
-        let s = EXE_RENDEZVOUS_SERVER.read().unwrap().clone();
-        if !s.is_empty() {
-            return vec![s];
-        }
-        let s = Self::get_option("custom-rendezvous-server");
-        if !s.is_empty() {
-            return vec![s];
-        }
-        let s = PROD_RENDEZVOUS_SERVER.read().unwrap().clone();
-        if !s.is_empty() {
-            return vec![s];
-        }
-        let serial_obsolute = CONFIG2.read().unwrap().serial > SERIAL;
-        if serial_obsolute {
-            let ss: Vec<String> = Self::get_option("rendezvous-servers")
-                .split(',')
-                .filter(|x| x.contains('.'))
-                .map(|x| x.to_owned())
-                .collect();
-            if !ss.is_empty() {
-                return ss;
-            }
-        }
-        return RENDEZVOUS_SERVERS.iter().map(|x| x.to_string()).collect();
-    }
-
-    pub fn reset_online() {
-        *ONLINE.lock().unwrap() = Default::default();
-    }
-
-    pub fn update_latency(host: &str, latency: i64) {
-        ONLINE.lock().unwrap().insert(host.to_owned(), latency);
-        let mut host = "".to_owned();
-        let mut delay = i64::MAX;
-        for (tmp_host, tmp_delay) in ONLINE.lock().unwrap().iter() {
-            if tmp_delay > &0 && tmp_delay < &delay {
-                delay = *tmp_delay;
-                host = tmp_host.to_string();
-            }
-        }
-        if !host.is_empty() {
-            let mut config = CONFIG2.write().unwrap();
-            if host != config.rendezvous_server {
-                log::debug!("Update rendezvous_server in config to {}", host);
-                log::debug!("{:?}", *ONLINE.lock().unwrap());
-                config.rendezvous_server = host;
-                config.store();
-            }
-        }
-    }
-
-    pub fn set_id(id: &str) {
-        let mut config = CONFIG.write().unwrap();
-        if id == config.id {
-            return;
-        }
-        config.id = id.into();
-        config.store();
-    }
-
-    pub fn set_nat_type(nat_type: i32) {
-        let mut config = CONFIG2.write().unwrap();
-        if nat_type == config.nat_type {
-            return;
-        }
-        config.nat_type = nat_type;
-        config.store();
-    }
-
-    pub fn get_nat_type() -> i32 {
-        CONFIG2.read().unwrap().nat_type
-    }
-
-    pub fn set_serial(serial: i32) {
-        let mut config = CONFIG2.write().unwrap();
-        if serial == config.serial {
-            return;
-        }
-        config.serial = serial;
-        config.store();
-    }
-
-    pub fn get_serial() -> i32 {
-        std::cmp::max(CONFIG2.read().unwrap().serial, SERIAL)
-    }
-
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    fn gen_id() -> Option<String> {
-        Self::get_auto_id()
-    }
-
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    fn gen_id() -> Option<String> {
-        let hostname_as_id = BUILTIN_SETTINGS
-            .read()
-            .unwrap()
-            .get(keys::OPTION_ALLOW_HOSTNAME_AS_ID)
-            .map(|v| option2bool(keys::OPTION_ALLOW_HOSTNAME_AS_ID, v))
-            .unwrap_or(false);
-        if hostname_as_id {
-            match whoami::fallible::hostname() {
-                Ok(h) => Some(h.replace(" ", "-")),
-                Err(e) => {
-                    log::warn!("Failed to get hostname, \"{}\", fallback to auto id", e);
-                    Self::get_auto_id()
-                }
-            }
-        } else {
-            Self::get_auto_id()
-        }
-    }
-
-    fn get_auto_id() -> Option<String> {
-        #[cfg(any(target_os = "android", target_os = "ios"))]
-        {
-            return Some(
-                rand::thread_rng()
-                    .gen_range(1_000_000_000..2_000_000_000)
-                    .to_string(),
-            );
-        }
-
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        {
-            let mut id = 0u32;
-            if let Ok(Some(ma)) = mac_address::get_mac_address() {
-                for x in &ma.bytes()[2..] {
-                    id = (id << 8) | (*x as u32);
-                }
-                id &= 0x1FFFFFFF;
-                Some(id.to_string())
-            } else {
-                None
-            }
-        }
-    }
-
-    pub fn get_auto_password(length: usize) -> String {
-        Self::get_auto_password_with_chars(length, CHARS)
-    }
-
-    pub fn get_auto_numeric_password(length: usize) -> String {
-        Self::get_auto_password_with_chars(length, NUM_CHARS)
-    }
-
-    fn get_auto_password_with_chars(length: usize, chars: &[char]) -> String {
-        let mut rng = rand::thread_rng();
-        (0..length)
-            .map(|_| chars[rng.gen::<usize>() % chars.len()])
-            .collect()
-    }
-
-    pub fn get_key_confirmed() -> bool {
-        CONFIG.read().unwrap().key_confirmed
-    }
-
-    pub fn set_key_confirmed(v: bool) {
-        let mut config = CONFIG.write().unwrap();
-        if config.key_confirmed == v {
-            return;
-        }
-        config.key_confirmed = v;
-        if !v {
-            config.keys_confirmed = Default::default();
-        }
-        config.store();
-    }
-
-    pub fn get_host_key_confirmed(host: &str) -> bool {
-        matches!(CONFIG.read().unwrap().keys_confirmed.get(host), Some(true))
-    }
-
-    pub fn set_host_key_confirmed(host: &str, v: bool) {
-        if Self::get_host_key_confirmed(host) == v {
-            return;
-        }
-        let mut config = CONFIG.write().unwrap();
-        config.keys_confirmed.insert(host.to_owned(), v);
-        config.store();
-    }
-
-    pub fn get_key_pair() -> KeyPair {
-        // lock here to make sure no gen_keypair more than once
-        // no use of CONFIG directly here to ensure no recursive calling in Config::load because of password dec which calling this function
-        let mut lock = KEY_PAIR.lock().unwrap();
-        if let Some(p) = lock.as_ref() {
-            return p.clone();
-        }
-        let mut config = Config::load_::<Config>("");
-        if config.key_pair.0.is_empty() {
-            log::info!("Generated new keypair for id: {}", config.id);
-            let (pk, sk) = sign::gen_keypair();
-            let key_pair = (sk.0.to_vec(), pk.0.into());
-            config.key_pair = key_pair.clone();
-            std::thread::spawn(|| {
-                let mut config = CONFIG.write().unwrap();
-                config.key_pair = key_pair;
-                config.store();
-            });
-        }
-        *lock = Some(config.key_pair.clone());
-        config.key_pair
-    }
-
-    pub fn no_register_device() -> bool {
-        BUILTIN_SETTINGS
-            .read()
-            .unwrap()
-            .get(keys::OPTION_REGISTER_DEVICE)
-            .map(|v| v == "N")
-            .unwrap_or(false)
-    }
-
-    pub fn is_disable_change_permanent_password() -> bool {
-        BUILTIN_SETTINGS
-            .read()
-            .unwrap()
-            .get(keys::OPTION_DISABLE_CHANGE_PERMANENT_PASSWORD)
-            .map(|v| v == "Y")
-            .unwrap_or(false)
-    }
-
-    pub fn is_disable_change_id() -> bool {
-        BUILTIN_SETTINGS
-            .read()
-            .unwrap()
-            .get(keys::OPTION_DISABLE_CHANGE_ID)
-            .map(|v| v == "Y")
-            .unwrap_or(false)
-    }
-
-    pub fn is_disable_unlock_pin() -> bool {
-        BUILTIN_SETTINGS
-            .read()
-            .unwrap()
-            .get(keys::OPTION_DISABLE_UNLOCK_PIN)
-            .map(|v| v == "Y")
-            .unwrap_or(false)
-    }
-
-    pub fn get_id() -> String {
-        let mut id = CONFIG.read().unwrap().id.clone();
-        if id.is_empty() {
-            if let Some(tmp) = Config::gen_id() {
-                id = tmp;
-                Config::set_id(&id);
-            }
-        }
-        id
-    }
-
-&& res.ends_with(":34671")
-&& get_builtin_option(keys::OPTION_ALLOW_HTTPS_34671) != "Y"
-        if a.is_empty() {
-return res.replace(":34671", "");
-        } else {
-            a
-        }
-    }
-
-    pub fn get_options() -> HashMap<String, String> {
-        let mut res = DEFAULT_SETTINGS.read().unwrap().clone();
-        res.extend(CONFIG2.read().unwrap().options.clone());
-        res.extend(OVERWRITE_SETTINGS.read().unwrap().clone());
-        res
-    }
-
-    #[inline]
-    fn purify_options(v: &mut HashMap<String, String>) {
-        v.retain(|k, v| is_option_can_save(&OVERWRITE_SETTINGS, k, &DEFAULT_SETTINGS, v));
-    }
-
-    pub fn set_options(mut v: HashMap<String, String>) {
-        Self::purify_options(&mut v);
-        let mut config = CONFIG2.write().unwrap();
-        if config.options == v {
-            return;
-        }
-        config.options = v;
-        config.store();
-    }
-
-    pub fn get_option(k: &str) -> String {
-        get_or(
-            &OVERWRITE_SETTINGS,
-            &CONFIG2.read().unwrap().options,
-            &DEFAULT_SETTINGS,
-            k,
-        )
-        .unwrap_or_default()
-    }
-
-    pub fn get_bool_option(k: &str) -> bool {
-        option2bool(k, &Self::get_option(k))
-    }
-
-    pub fn set_option(k: String, v: String) {
-        if !is_option_can_save(&OVERWRITE_SETTINGS, &k, &DEFAULT_SETTINGS, &v) {
-            let mut config = CONFIG2.write().unwrap();
-            if config.options.remove(&k).is_some() {
-                config.store();
-            }
-            return;
-        }
-        let mut config = CONFIG2.write().unwrap();
-        let v2 = if v.is_empty() { None } else { Some(&v) };
-        if v2 != config.options.get(&k) {
-            if v2.is_none() {
-                config.options.remove(&k);
-            } else {
-                config.options.insert(k, v);
-            }
-            config.store();
-        }
-    }
-
-    pub fn update_id() {
-        // to-do: how about if one ip register a lot of ids?
-        let id = Self::get_id();
-        let mut rng = rand::thread_rng();
-        let new_id = rng.gen_range(1_000_000_000..2_000_000_000).to_string();
-        Config::set_id(&new_id);
-        log::info!("id updated from {} to {}", id, new_id);
-    }
-
-    pub fn set_permanent_password(password: &str) {
-        if Self::is_disable_change_permanent_password() {
-            return;
-        }
-        if HARD_SETTINGS
-            .read()
-            .unwrap()
-            .get("password")
-            .map_or(false, |v| v == password)
-        {
-            if CONFIG.read().unwrap().password.is_empty() {
-                return;
-            }
-        }
-        let mut config = CONFIG.write().unwrap();
-        if password == config.password {
-            return;
-        }
-        config.password = password.into();
-        config.store();
-        Self::clear_trusted_devices();
-    }
-
-    pub fn get_permanent_password() -> String {
-        let mut password = CONFIG.read().unwrap().password.clone();
-        if password.is_empty() {
-            if let Some(v) = HARD_SETTINGS.read().unwrap().get("password") {
-                password = v.to_owned();
-            }
-        }
-        password
-    }
-
-    pub fn set_salt(salt: &str) {
-        let mut config = CONFIG.write().unwrap();
-        if salt == config.salt {
-            return;
-        }
-        config.salt = salt.into();
-        config.store();
-    }
-
-    pub fn get_salt() -> String {
-        let mut salt = CONFIG.read().unwrap().salt.clone();
-        if salt.is_empty() {
-            salt = Config::get_auto_password(6);
-            Config::set_salt(&salt);
-        }
-        salt
-    }
-
-    pub fn set_socks(socks: Option<Socks5Server>) {
-        if OVERWRITE_SETTINGS
-            .read()
-            .unwrap()
-            .contains_key(keys::OPTION_PROXY_URL)
-        {
-            return;
-        }
-
-        let mut config = CONFIG2.write().unwrap();
-        if config.socks == socks {
-            return;
-        }
-        if config.socks.is_none() {
-            let equal_to_default = |key: &str, value: &str| {
-                DEFAULT_SETTINGS
-                    .read()
-                    .unwrap()
-                    .get(key)
-                    .map_or(false, |x| *x == value)
-            };
-            let contains_url = DEFAULT_SETTINGS
-                .read()
-                .unwrap()
-                .get(keys::OPTION_PROXY_URL)
-                .is_some();
-            let url = equal_to_default(
-                keys::OPTION_PROXY_URL,
-                &socks.clone().unwrap_or_default().proxy,
-            );
-            let username = equal_to_default(
-                keys::OPTION_PROXY_USERNAME,
-                &socks.clone().unwrap_or_default().username,
-            );
-            let password = equal_to_default(
-                keys::OPTION_PROXY_PASSWORD,
-                &socks.clone().unwrap_or_default().password,
-            );
-            if contains_url && url && username && password {
-                return;
-            }
-        }
-        config.socks = socks;
-        config.store();
-    }
-
-    #[inline]
-    fn get_socks_from_custom_client_advanced_settings(
-        settings: &HashMap<String, String>,
-    ) -> Option<Socks5Server> {
-        let url = settings.get(keys::OPTION_PROXY_URL)?;
-        Some(Socks5Server {
-            proxy: url.to_owned(),
-            username: settings
-                .get(keys::OPTION_PROXY_USERNAME)
-                .map(|x| x.to_string())
-                .unwrap_or_default(),
-            password: settings
-                .get(keys::OPTION_PROXY_PASSWORD)
-                .map(|x| x.to_string())
-                .unwrap_or_default(),
-        })
-    }
-
-    pub fn get_socks() -> Option<Socks5Server> {
-        Self::get_socks_from_custom_client_advanced_settings(&OVERWRITE_SETTINGS.read().unwrap())
-            .or(CONFIG2.read().unwrap().socks.clone())
-            .or(Self::get_socks_from_custom_client_advanced_settings(
-                &DEFAULT_SETTINGS.read().unwrap(),
-            ))
-    }
-
-    #[inline]
-    pub fn is_proxy() -> bool {
-        Self::get_network_type() != NetworkType::Direct
-    }
-
-    pub fn get_network_type() -> NetworkType {
-        if OVERWRITE_SETTINGS
-            .read()
-            .unwrap()
-            .get(keys::OPTION_PROXY_URL)
-            .is_some()
-        {
-            return NetworkType::ProxySocks;
-        }
-        if CONFIG2.read().unwrap().socks.is_some() {
-            return NetworkType::ProxySocks;
-        }
-        if DEFAULT_SETTINGS
-            .read()
-            .unwrap()
-            .get(keys::OPTION_PROXY_URL)
-            .is_some()
-        {
-            return NetworkType::ProxySocks;
-        }
-        NetworkType::Direct
-    }
-
-    pub fn get_unlock_pin() -> String {
-        if Self::is_disable_unlock_pin() {
-            return String::new();
-        }
-        CONFIG2.read().unwrap().unlock_pin.clone()
-    }
-
-    pub fn set_unlock_pin(pin: &str) {
-        if Self::is_disable_unlock_pin() {
-            return;
-        }
-        let mut config = CONFIG2.write().unwrap();
-        if pin == config.unlock_pin {
-            return;
-        }
-        config.unlock_pin = pin.to_string();
-        config.store();
-    }
-
-    pub fn get_trusted_devices_json() -> String {
-        serde_json::to_string(&Self::get_trusted_devices()).unwrap_or_default()
-    }
-hintText: '34675',
-    pub fn get_trusted_devices() -> Vec<TrustedDevice> {
-        let (devices, synced) = TRUSTED_DEVICES.read().unwrap().clone();
-        if synced {
-            return devices;
-        }
-        let devices = CONFIG2.read().unwrap().trusted_devices.clone();
-        let (devices, succ, store) = decrypt_str_or_original(&devices, PASSWORD_ENC_VERSION);
-        if succ {
-            let mut devices: Vec<TrustedDevice> =
-                serde_json::from_str(&devices).unwrap_or_default();
-            let len = devices.len();
-            devices.retain(|d| !d.outdate());
-            if store || devices.len() != len {
-                Self::set_trusted_devices(devices.clone());
-            }
-            *TRUSTED_DEVICES.write().unwrap() = (devices.clone(), true);
-            devices
-        } else {
-            Default::default()
-        }
-    }
-
-    fn set_trusted_devices(mut trusted_devices: Vec<TrustedDevice>) {
-        trusted_devices.retain(|d| !d.outdate());
-        let devices = serde_json::to_string(&trusted_devices).unwrap_or_default();
-        let max_len = 1024 * 1024;
-        if devices.bytes().len() > max_len {
-            log::error!("Trusted devices too large: {}", devices.bytes().len());
-            return;
-        }
-        let devices = encrypt_str_or_original(&devices, PASSWORD_ENC_VERSION, max_len);
-        let mut config = CONFIG2.write().unwrap();
-        config.trusted_devices = devices;
-        config.store();
-        *TRUSTED_DEVICES.write().unwrap() = (trusted_devices, true);
-    }
-
-    pub fn add_trusted_device(device: TrustedDevice) {
-        let mut devices = Self::get_trusted_devices();
-        devices.retain(|d| d.hwid != device.hwid);
-        devices.push(device);
-        Self::set_trusted_devices(devices);
-    }
-
-    pub fn remove_trusted_devices(hwids: &Vec<Bytes>) {
-        let mut devices = Self::get_trusted_devices();
-        devices.retain(|d| !hwids.contains(&d.hwid));
-        Self::set_trusted_devices(devices);
-    }
-
-    pub fn clear_trusted_devices() {
-        Self::set_trusted_devices(Default::default());
-    }
-
-    pub fn get() -> Config {
-        return CONFIG.read().unwrap().clone();
-    }
-
-    pub fn set(cfg: Config) -> bool {
-        let mut lock = CONFIG.write().unwrap();
-        if *lock == cfg {
-            return false;
-        }
-        *lock = cfg;
-        lock.store();
-        true
-    }
-
-    fn with_extension(path: PathBuf) -> PathBuf {
-        let ext = path.extension();
-        if let Some(ext) = ext {
-            let ext = format!("{}.toml", ext.to_string_lossy());
-            path.with_extension(ext)
-        } else {
-            path.with_extension("toml")
-        }
-    }
-}
-
-const PEERS: &str = "peers";
-
-impl PeerConfig {
-    pub fn load(id: &str) -> PeerConfig {
-        let _lock = CONFIG.read().unwrap();
-        match confy::load_path(Self::path(id)) {
-            Ok(config) => {
-                let mut config: PeerConfig = config;
-                let mut store = false;
-                let (password, _, store2) =
-                    decrypt_vec_or_original(&config.password, PASSWORD_ENC_VERSION);
-                config.password = password;
-                store = store || store2;
-                for opt in ["rdp_password", "os-username", "os-password"] {
-                    if let Some(v) = config.options.get_mut(opt) {
-                        let (encrypted, _, store2) =
-                            decrypt_str_or_original(v, PASSWORD_ENC_VERSION);
-                        *v = encrypted;
-                        store = store || store2;
-                    }
-                }
-                if store {
-                    config.store_(id);
-                }
-                config
-            }
-            Err(err) => {
-                if let confy::ConfyError::GeneralLoadError(err) = &err {
-                    if err.kind() == std::io::ErrorKind::NotFound {
-                        return Default::default();
-                    }
-                }
-                log::error!("Failed to load peer config '{}': {}", id, err);
-                Default::default()
-            }
-        }
-    }
-
-    pub fn store(&self, id: &str) {
-        let _lock = CONFIG.read().unwrap();
-        self.store_(id);
-    }
-
-    fn store_(&self, id: &str) {
-        let mut config = self.clone();
-        config.password =
-            encrypt_vec_or_original(&config.password, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
-        for opt in ["rdp_password", "os-username", "os-password"] {
-            if let Some(v) = config.options.get_mut(opt) {
-                *v = encrypt_str_or_original(v, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN)
-            }
-        }
-        if let Err(err) = store_path(Self::path(id), config) {
-            log::error!("Failed to store config: {}", err);
-        }
-        NEW_STORED_PEER_CONFIG.lock().unwrap().insert(id.to_owned());
-    }
-
-    pub fn remove(id: &str) {
-        fs::remove_file(Self::path(id)).ok();
-    }
-
-    fn path(id: &str) -> PathBuf {
-        //If the id contains invalid chars, encode it
-        let forbidden_paths = Regex::new(r".*[<>:/\\|\?\*].*");
-        let path: PathBuf;
-        if let Ok(forbidden_paths) = forbidden_paths {
-            let id_encoded = if forbidden_paths.is_match(id) {
-                "base64_".to_string() + base64::encode(id, base64::Variant::Original).as_str()
-            } else {
-                id.to_string()
-            };
-            path = [PEERS, id_encoded.as_str()].iter().collect();
-        } else {
-            log::warn!("Regex create failed: {:?}", forbidden_paths.err());
-            // fallback for failing to create this regex.
-            path = [PEERS, id.replace(":", "_").as_str()].iter().collect();
-        }
-        Config::with_extension(Config::path(path))
-    }
-
-    // The number of peers to load in the first round when showing the peers card list in the main window.
-    // When there're too many peers, loading all of them at once will take a long time.
-    // We can load them in two rouds, the first round loads the first 100 peers, and the second round loads the rest.
-    // Then the UI will show the first 100 peers first, and the rest will be loaded and shown later.
-    pub const BATCH_LOADING_COUNT: usize = 100;
-
-    pub fn get_vec_id_modified_time_path(
-        id_filters: &Option<Vec<String>>,
-    ) -> Vec<(String, SystemTime, PathBuf)> {
-        if let Ok(peers) = Config::path(PEERS).read_dir() {
-            let mut vec_id_modified_time_path = peers
-                .into_iter()
-                .filter_map(|res| match res {
-                    Ok(res) => {
-                        let p = res.path();
-                        if p.is_file()
-                            && p.extension().map(|p| p.to_str().unwrap_or("")) == Some("toml")
-                        {
-                            Some(p)
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                })
-                .map(|p| {
-                    let id = p
-                        .file_stem()
-                        .map(|p| p.to_str().unwrap_or(""))
-                        .unwrap_or("")
-                        .to_owned();
-
-                    let id_decoded_string = if id.starts_with("base64_") && id.len() != 7 {
-                        let id_decoded =
-                            base64::decode(&id[7..], base64::Variant::Original).unwrap_or_default();
-                        String::from_utf8_lossy(&id_decoded).as_ref().to_owned()
-                    } else {
-                        id
-                    };
-                    (id_decoded_string, p)
-                })
-                .filter(|(id, _)| {
-                    let Some(filters) = id_filters else {
-                        return true;
-                    };
-                    filters.contains(id)
-                })
-                .map(|(id, p)| {
-                    let t = crate::get_modified_time(&p);
-                    (id, t, p)
-                })
-                .collect::<Vec<_>>();
-            vec_id_modified_time_path.sort_unstable_by(|a, b| b.1.cmp(&a.1));
-            vec_id_modified_time_path
-        } else {
-            vec![]
-        }
-    }
-
-    #[inline]
-    async fn preload_file_async(path: PathBuf) {
-        let _ = tokio::fs::File::open(path).await;
-    }
-
-    #[tokio::main(flavor = "current_thread")]
-    async fn preload_peers_async() {
-        let now = std::time::Instant::now();
-        let vec_id_modified_time_path = Self::get_vec_id_modified_time_path(&None);
-        let total_count = vec_id_modified_time_path.len();
-        let mut futs = vec![];
-        for (_, _, path) in vec_id_modified_time_path.into_iter() {
-            futs.push(Self::preload_file_async(path));
-            if futs.len() >= Self::BATCH_LOADING_COUNT {
-                let first_load_start = std::time::Instant::now();
-                futures::future::join_all(futs).await;
-                if first_load_start.elapsed().as_millis() < 10 {
-                    // No need to preload the rest if the first load is fast.
-                    return;
-                }
-                futs = vec![];
-            }
-        }
-        if !futs.is_empty() {
-            futures::future::join_all(futs).await;
-        }
-        log::info!(
-            "Preload peers done in {:?}, batch_count: {}, total: {}",
-            now.elapsed(),
-            Self::BATCH_LOADING_COUNT,
-            total_count
-        );
-    }
-
-    // We have to preload all peers in a background thread.
-    // Because we find that opening files the first time after the system (Windows) booting will be very slow, up to 200~400ms.
-    // The reason is that the Windows has "Microsoft Defender Antivirus Service" running in the background, which will scan the file when it's opened the first time.
-    // So we have to preload all peers in a background thread to avoid the delay when opening the file the first time.
-    // We can temporarily stop "Microsoft Defender Antivirus Service" or add the fold to the white list, to verify this. But don't do this in the release version.
-    pub fn preload_peers() {
-        std::thread::spawn(|| {
-            Self::preload_peers_async();
-        });
-    }
-
-    pub fn peers(id_filters: Option<Vec<String>>) -> Vec<(String, SystemTime, PeerConfig)> {
-        let vec_id_modified_time_path = Self::get_vec_id_modified_time_path(&id_filters);
-        Self::batch_peers(
-            &vec_id_modified_time_path,
-            0,
-            Some(vec_id_modified_time_path.len()),
-        )
-        .0
-    }
-
-    pub fn batch_peers(
-        all: &Vec<(String, SystemTime, PathBuf)>,
-        from: usize,
-        to: Option<usize>,
-    ) -> (Vec<(String, SystemTime, PeerConfig)>, usize) {
-        if from >= all.len() {
-            return (vec![], 0);
-        }
-
-        let to = match to {
-            Some(to) => to.min(all.len()),
-            None => (from + Self::BATCH_LOADING_COUNT).min(all.len()),
-        };
-
-        // to <= from is unexpected, but we can just return an empty vec in this case.
-        if to <= from {
-            return (vec![], from);
-        }
-
-        let peers: Vec<_> = all[from..to]
-            .iter()
-            .map(|(id, t, p)| {
-                let c = PeerConfig::load(&id);
-                if c.info.platform.is_empty() {
-                    fs::remove_file(p).ok();
-                }
-                (id.clone(), t.clone(), c)
-            })
-            .filter(|p| !p.2.info.platform.is_empty())
-            .collect();
-        (peers, to)
-    }
-
-    pub fn exists(id: &str) -> bool {
-        Self::path(id).exists()
-    }
-
-    serde_field_string!(
-        default_view_style,
-        deserialize_view_style,
-        UserDefaultConfig::read(keys::OPTION_VIEW_STYLE)
-    );
-    serde_field_string!(
-        default_scroll_style,
-        deserialize_scroll_style,
-        UserDefaultConfig::read(keys::OPTION_SCROLL_STYLE)
-    );
-    serde_field_string!(
-        default_image_quality,
-        deserialize_image_quality,
-        UserDefaultConfig::read(keys::OPTION_IMAGE_QUALITY)
-    );
-    serde_field_string!(
-        default_reverse_mouse_wheel,
-        deserialize_reverse_mouse_wheel,
-        UserDefaultConfig::read(keys::OPTION_REVERSE_MOUSE_WHEEL)
-    );
-    serde_field_string!(
-        default_displays_as_individual_windows,
-        deserialize_displays_as_individual_windows,
-        UserDefaultConfig::read(keys::OPTION_DISPLAYS_AS_INDIVIDUAL_WINDOWS)
-    );
-    serde_field_string!(
-        default_use_all_my_displays_for_the_remote_session,
-        deserialize_use_all_my_displays_for_the_remote_session,
-        UserDefaultConfig::read(keys::OPTION_USE_ALL_MY_DISPLAYS_FOR_THE_REMOTE_SESSION)
-    );
-
-    fn default_custom_image_quality() -> Vec<i32> {
-        let f: f64 = UserDefaultConfig::read(keys::OPTION_CUSTOM_IMAGE_QUALITY)
-            .parse()
-            .unwrap_or(50.0);
-        vec![f as _]
-    }
-
-    fn deserialize_custom_image_quality<'de, D>(deserializer: D) -> Result<Vec<i32>, D::Error>
-    where
-        D: de::Deserializer<'de>,
-    {
-        let v: Vec<i32> = de::Deserialize::deserialize(deserializer)?;
-        if v.len() == 1 && v[0] >= 10 && v[0] <= 0xFFF {
-            Ok(v)
-        } else {
-            Ok(Self::default_custom_image_quality())
-        }
-    }
-
-    fn default_options() -> HashMap<String, String> {
-        let mut mp: HashMap<String, String> = Default::default();
-        let _ = [
-            keys::OPTION_CODEC_PREFERENCE,
-            keys::OPTION_CUSTOM_FPS,
-            keys::OPTION_ZOOM_CURSOR,
-            keys::OPTION_I444,
-            keys::OPTION_SWAP_LEFT_RIGHT_MOUSE,
-            keys::OPTION_COLLAPSE_TOOLBAR,
-        ]
-        .map(|key| {
-            mp.insert(key.to_owned(), UserDefaultConfig::read(key));
-        });
-        mp
-    }
-
-    fn default_trackpad_speed() -> i32 {
-        UserDefaultConfig::read(keys::OPTION_TRACKPAD_SPEED)
-            .parse()
-            .unwrap_or(100)
-    }
-
-    fn deserialize_trackpad_speed<'de, D>(deserializer: D) -> Result<i32, D::Error>
-    where
-        D: de::Deserializer<'de>,
-    {
-        let v: i32 = de::Deserialize::deserialize(deserializer)?;
-        if v >= 10 && v <= 1000 {
-            Ok(v)
-        } else {
-            Ok(Self::default_trackpad_speed())
-        }
-    }
-
-    fn default_edge_scroll_edge_thickness() -> i32 {
-        UserDefaultConfig::read(keys::OPTION_EDGE_SCROLL_EDGE_THICKNESS)
-            .parse()
-            .unwrap_or(100)
-    }
-
-    fn deserialize_edge_scroll_edge_thickness<'de, D>(deserializer: D) -> Result<i32, D::Error>
-    where
-        D: de::Deserializer<'de>,
-    {
-        let v: i32 = de::Deserialize::deserialize(deserializer)?;
-        if v >= 20 && v <= 150 {
-            Ok(v)
-        } else {
-            Ok(Self::default_edge_scroll_edge_thickness())
-        }
-    }
-}
-
-serde_field_bool!(
-    ShowRemoteCursor,
-    "show_remote_cursor",
-    default_show_remote_cursor,
-    "ShowRemoteCursor::default_show_remote_cursor"
-);
-serde_field_bool!(
-    FollowRemoteCursor,
-    "follow_remote_cursor",
-    default_follow_remote_cursor,
-    "FollowRemoteCursor::default_follow_remote_cursor"
-);
-
-serde_field_bool!(
-    FollowRemoteWindow,
-    "follow_remote_window",
-    default_follow_remote_window,
-    "FollowRemoteWindow::default_follow_remote_window"
-);
-serde_field_bool!(
-    ShowQualityMonitor,
-    "show_quality_monitor",
-    default_show_quality_monitor,
-    "ShowQualityMonitor::default_show_quality_monitor"
-);
-serde_field_bool!(
-    DisableAudio,
-    "disable_audio",
-    default_disable_audio,
-    "DisableAudio::default_disable_audio"
-);
-serde_field_bool!(
-    EnableFileCopyPaste,
-    "enable-file-copy-paste",
-    default_enable_file_copy_paste,
-    "EnableFileCopyPaste::default_enable_file_copy_paste"
-);
-serde_field_bool!(
-    DisableClipboard,
-    "disable_clipboard",
-    default_disable_clipboard,
-    "DisableClipboard::default_disable_clipboard"
-);
-serde_field_bool!(
-    LockAfterSessionEnd,
-    "lock_after_session_end",
-    default_lock_after_session_end,
-    "LockAfterSessionEnd::default_lock_after_session_end"
-);
-serde_field_bool!(
-    TerminalPersistent,
-    "terminal-persistent",
-    default_terminal_persistent,
-    "TerminalPersistent::default_terminal_persistent"
-);
-serde_field_bool!(
-    PrivacyMode,
-    "privacy_mode",
-    default_privacy_mode,
-    "PrivacyMode::default_privacy_mode"
-);
-
-serde_field_bool!(
-    AllowSwapKey,
-    "allow_swap_key",
-    default_allow_swap_key,
-    "AllowSwapKey::default_allow_swap_key"
-);
-
-serde_field_bool!(
-    ViewOnly,
-    "view_only",
-    default_view_only,
-    "ViewOnly::default_view_only"
-);
-
-serde_field_bool!(
-    ShowMyCursor,
-    "show_my_cursor",
-    default_show_my_cursor,
-    "ShowMyCursor::default_show_my_cursor"
-);
-
-serde_field_bool!(
-    SyncInitClipboard,
-    "sync-init-clipboard",
-    default_sync_init_clipboard,
-    "SyncInitClipboard::default_sync_init_clipboard"
-);
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct LocalConfig {
-    #[serde(default, deserialize_with = "deserialize_string")]
-    remote_id: String, // latest used one
-    #[serde(default, deserialize_with = "deserialize_string")]
-    kb_layout_type: String,
-    #[serde(default, deserialize_with = "deserialize_size")]
-    size: Size,
-    #[serde(default, deserialize_with = "deserialize_vec_string")]
-    pub fav: Vec<String>,
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    options: HashMap<String, String>,
-    // Various data for flutter ui
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    ui_flutter: HashMap<String, String>,
-}
-
-impl LocalConfig {
-    fn load() -> LocalConfig {
-        Config::load_::<LocalConfig>("_local")
-    }
-
-    fn store(&self) {
-        Config::store_(self, "_local");
-    }
-
-    pub fn get_kb_layout_type() -> String {
-        LOCAL_CONFIG.read().unwrap().kb_layout_type.clone()
-    }
-
-    pub fn set_kb_layout_type(kb_layout_type: String) {
-        let mut config = LOCAL_CONFIG.write().unwrap();
-        config.kb_layout_type = kb_layout_type;
-        config.store();
-    }
-
-    pub fn get_size() -> Size {
-        LOCAL_CONFIG.read().unwrap().size
-    }
-
-    pub fn set_size(x: i32, y: i32, w: i32, h: i32) {
-        let mut config = LOCAL_CONFIG.write().unwrap();
-        let size = (x, y, w, h);
-        if size == config.size || size.2 < 300 || size.3 < 300 {
-            return;
-        }
-        config.size = size;
-        config.store();
-    }
-
-    pub fn set_remote_id(remote_id: &str) {
-        let mut config = LOCAL_CONFIG.write().unwrap();
-        if remote_id == config.remote_id {
-            return;
-        }
-        config.remote_id = remote_id.into();
-        config.store();
-    }
-
-    pub fn get_remote_id() -> String {
-        LOCAL_CONFIG.read().unwrap().remote_id.clone()
-    }
-
-    pub fn set_fav(fav: Vec<String>) {
-        let mut lock = LOCAL_CONFIG.write().unwrap();
-        if lock.fav == fav {
-            return;
-        }
-        lock.fav = fav;
-        lock.store();
-    }
-
-    pub fn get_fav() -> Vec<String> {
-        LOCAL_CONFIG.read().unwrap().fav.clone()
-    }
-
-    pub fn get_option(k: &str) -> String {
-        get_or(
-            &OVERWRITE_LOCAL_SETTINGS,
-            &LOCAL_CONFIG.read().unwrap().options,
-            &DEFAULT_LOCAL_SETTINGS,
-            k,
-        )
-        .unwrap_or_default()
-    }
-
-    // Usually get_option should be used.
-    pub fn get_option_from_file(k: &str) -> String {
-        get_or(
-            &OVERWRITE_LOCAL_SETTINGS,
-            &Self::load().options,
-            &DEFAULT_LOCAL_SETTINGS,
-            k,
-        )
-        .unwrap_or_default()
-    }
-
-    pub fn get_bool_option(k: &str) -> bool {
-        option2bool(k, &Self::get_option(k))
-    }
-
-    pub fn set_option(k: String, v: String) {
-        if !is_option_can_save(&OVERWRITE_LOCAL_SETTINGS, &k, &DEFAULT_LOCAL_SETTINGS, &v) {
-            let mut config = LOCAL_CONFIG.write().unwrap();
-            if config.options.remove(&k).is_some() {
-                config.store();
-            }
-            return;
-        }
-        let mut config = LOCAL_CONFIG.write().unwrap();
-        // The custom client will explictly set "default" as the default language.
-        let is_custom_client_default_lang = k == keys::OPTION_LANGUAGE && v == "default";
-        if is_custom_client_default_lang {
-            config.options.insert(k, "".to_owned());
-            config.store();
-            return;
-        }
-        let v2 = if v.is_empty() { None } else { Some(&v) };
-        if v2 != config.options.get(&k) {
-            if v2.is_none() {
-                config.options.remove(&k);
-            } else {
-                config.options.insert(k, v);
-            }
-            config.store();
-        }
-    }
-
-    pub fn get_flutter_option(k: &str) -> String {
-        get_or(
-            &OVERWRITE_LOCAL_SETTINGS,
-            &LOCAL_CONFIG.read().unwrap().ui_flutter,
-            &DEFAULT_LOCAL_SETTINGS,
-            k,
-        )
-        .unwrap_or_default()
-    }
-
-    pub fn set_flutter_option(k: String, v: String) {
-        let mut config = LOCAL_CONFIG.write().unwrap();
-        let v2 = if v.is_empty() { None } else { Some(&v) };
-        if v2 != config.ui_flutter.get(&k) {
-            if v2.is_none() {
-                config.ui_flutter.remove(&k);
-            } else {
-                config.ui_flutter.insert(k, v);
-            }
-            config.store();
-        }
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct DiscoveryPeer {
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub id: String,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub username: String,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub hostname: String,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub platform: String,
-    #[serde(default, deserialize_with = "deserialize_bool")]
-    pub online: bool,
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    pub ip_mac: HashMap<String, String>,
-}
-
-impl DiscoveryPeer {
-    pub fn is_same_peer(&self, other: &DiscoveryPeer) -> bool {
-        self.id == other.id && self.username == other.username
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct LanPeers {
-    #[serde(default, deserialize_with = "deserialize_vec_discoverypeer")]
-    pub peers: Vec<DiscoveryPeer>,
-}
-
-impl LanPeers {
-    pub fn load() -> LanPeers {
-        let _lock = CONFIG.read().unwrap();
-        match confy::load_path(Config::file_("_lan_peers")) {
-            Ok(peers) => peers,
-            Err(err) => {
-                log::error!("Failed to load lan peers: {}", err);
-                Default::default()
-            }
-        }
-    }
-
-    pub fn store(peers: &[DiscoveryPeer]) {
-        let f = LanPeers {
-            peers: peers.to_owned(),
-        };
-        if let Err(err) = store_path(Config::file_("_lan_peers"), f) {
-            log::error!("Failed to store lan peers: {}", err);
-        }
-    }
-
-    pub fn modify_time() -> crate::ResultType<u64> {
-        let p = Config::file_("_lan_peers");
-        Ok(fs::metadata(p)?
-            .modified()?
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_millis() as _)
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct UserDefaultConfig {
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    options: HashMap<String, String>,
-}
-
-impl UserDefaultConfig {
-    fn read(key: &str) -> String {
-        let mut cfg = USER_DEFAULT_CONFIG.write().unwrap();
-        // we do so, because default config may changed in another process, but we don't sync it
-        // but no need to read every time, give a small interval to avoid too many redundant read waste
-        if cfg.1.elapsed() > Duration::from_secs(1) {
-            *cfg = (Self::load(), Instant::now());
-        }
-        cfg.0.get(key)
-    }
-
-    pub fn load() -> UserDefaultConfig {
-        Config::load_::<UserDefaultConfig>("_default")
-    }
-
-    #[inline]
-    fn store(&self) {
-        Config::store_(self, "_default");
-    }
-
-    pub fn get(&self, key: &str) -> String {
-        match key {
-            #[cfg(any(target_os = "android", target_os = "ios"))]
-            keys::OPTION_VIEW_STYLE => self.get_string(key, "adaptive", vec!["original"]),
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            keys::OPTION_VIEW_STYLE => self.get_string(key, "original", vec!["adaptive"]),
-            keys::OPTION_SCROLL_STYLE => {
-                self.get_string(key, "scrollauto", vec!["scrolledge", "scrollbar"])
-            }
-            keys::OPTION_IMAGE_QUALITY => {
-                self.get_string(key, "balanced", vec!["best", "low", "custom"])
-            }
-            keys::OPTION_CODEC_PREFERENCE => {
-                self.get_string(key, "auto", vec!["vp8", "vp9", "av1", "h264", "h265"])
-            }
-            keys::OPTION_CUSTOM_IMAGE_QUALITY => self.get_num_string(key, 50.0, 10.0, 0xFFF as f64),
-            keys::OPTION_CUSTOM_FPS => self.get_num_string(key, 30.0, 5.0, 120.0),
-            keys::OPTION_ENABLE_FILE_COPY_PASTE => self.get_string(key, "Y", vec!["", "N"]),
-            keys::OPTION_EDGE_SCROLL_EDGE_THICKNESS => self.get_num_string(key, 100, 20, 150),
-            keys::OPTION_TRACKPAD_SPEED => self.get_num_string(key, 100, 10, 1000),
-            _ => self
-                .get_after(key)
-                .map(|v| v.to_string())
-                .unwrap_or_default(),
-        }
-    }
-
-    pub fn set(&mut self, key: String, value: String) {
-        if !is_option_can_save(
-            &OVERWRITE_DISPLAY_SETTINGS,
-            &key,
-            &DEFAULT_DISPLAY_SETTINGS,
-            &value,
-        ) {
-            if self.options.remove(&key).is_some() {
-                self.store();
-            }
-            return;
-        }
-        if value.is_empty() {
-            self.options.remove(&key);
-        } else {
-            self.options.insert(key, value);
-        }
-        self.store();
-    }
-
-    #[inline]
-    fn get_string(&self, key: &str, default: &str, others: Vec<&str>) -> String {
-        match self.get_after(key) {
-            Some(option) => {
-                if others.contains(&option.as_str()) {
-                    option.to_owned()
-                } else {
-                    default.to_owned()
-                }
-            }
-            None => default.to_owned(),
-        }
-    }
-
-    #[inline]
-    fn get_num_string<T>(&self, key: &str, default: T, min: T, max: T) -> String
-    where
-        T: ToString + std::str::FromStr + std::cmp::PartialOrd + std::marker::Copy,
-    {
-        match self.get_after(key) {
-            Some(option) => {
-                let v: T = option.parse().unwrap_or(default);
-                if v >= min && v <= max {
-                    v.to_string()
-                } else {
-                    default.to_string()
-                }
-            }
-            None => default.to_string(),
-        }
-    }
-
-    fn get_after(&self, k: &str) -> Option<String> {
-        get_or(
-            &OVERWRITE_DISPLAY_SETTINGS,
-            &self.options,
-            &DEFAULT_DISPLAY_SETTINGS,
-            k,
-        )
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct AbPeer {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub id: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub hash: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub username: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub hostname: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub platform: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub alias: String,
-    #[serde(default, deserialize_with = "deserialize_vec_string")]
-    pub tags: Vec<String>,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct AbEntry {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub guid: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub name: String,
-    #[serde(default, deserialize_with = "deserialize_vec_abpeer")]
-    pub peers: Vec<AbPeer>,
-    #[serde(default, deserialize_with = "deserialize_vec_string")]
-    pub tags: Vec<String>,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub tag_colors: String,
-}
-
-impl AbEntry {
-    pub fn personal(&self) -> bool {
-        self.name == "My address book" || self.name == "Legacy address book"
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct Ab {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub access_token: String,
-    #[serde(default, deserialize_with = "deserialize_vec_abentry")]
-    pub ab_entries: Vec<AbEntry>,
-}
-
-impl Ab {
-    fn path() -> PathBuf {
-        let filename = format!("{}_ab", APP_NAME.read().unwrap().clone());
-        Config::path(filename)
-    }
-
-    pub fn store(json: String) {
-        if let Ok(mut file) = std::fs::File::create(Self::path()) {
-            let data = compress(json.as_bytes());
-            let max_len = 64 * 1024 * 1024;
-            if data.len() > max_len {
-                // maxlen of function decompress
-                log::error!("ab data too large, {} > {}", data.len(), max_len);
-                return;
-            }
-            if let Ok(data) = symmetric_crypt(&data, true) {
-                file.write_all(&data).ok();
-            }
-        };
-    }
-
-    pub fn load() -> Ab {
-        if let Ok(mut file) = std::fs::File::open(Self::path()) {
-            let mut data = vec![];
-            if file.read_to_end(&mut data).is_ok() {
-                if let Ok(data) = symmetric_crypt(&data, false) {
-                    let data = decompress(&data);
-                    if let Ok(ab) = serde_json::from_str::<Ab>(&String::from_utf8_lossy(&data)) {
-                        return ab;
-                    }
-                }
-            }
-        };
-        Self::remove();
-        Ab::default()
-    }
-
-    pub fn remove() {
-        std::fs::remove_file(Self::path()).ok();
-    }
-}
-
-// use default value when field type is wrong
-macro_rules! deserialize_default {
-    ($func_name:ident, $return_type:ty) => {
-        fn $func_name<'de, D>(deserializer: D) -> Result<$return_type, D::Error>
-        where
-            D: de::Deserializer<'de>,
-        {
-            Ok(de::Deserialize::deserialize(deserializer).unwrap_or_default())
-        }
-    };
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct GroupPeer {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub id: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub username: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub hostname: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub platform: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub login_name: String,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct GroupUser {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub name: String,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct DeviceGroup {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub name: String,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct Group {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub access_token: String,
-    #[serde(default, deserialize_with = "deserialize_vec_groupuser")]
-    pub users: Vec<GroupUser>,
-    #[serde(default, deserialize_with = "deserialize_vec_grouppeer")]
-    pub peers: Vec<GroupPeer>,
-    #[serde(default, deserialize_with = "deserialize_vec_devicegroup")]
-    pub device_groups: Vec<DeviceGroup>,
-}
-
-impl Group {
-    fn path() -> PathBuf {
-        let filename = format!("{}_group", APP_NAME.read().unwrap().clone());
-        Config::path(filename)
-    }
-
-    pub fn store(json: String) {
-        if let Ok(mut file) = std::fs::File::create(Self::path()) {
-            let data = compress(json.as_bytes());
-            let max_len = 64 * 1024 * 1024;
-            if data.len() > max_len {
-                // maxlen of function decompress
-                return;
-            }
-            if let Ok(data) = symmetric_crypt(&data, true) {
-                file.write_all(&data).ok();
-            }
-        };
-    }
-
-    pub fn load() -> Self {
-        if let Ok(mut file) = std::fs::File::open(Self::path()) {
-            let mut data = vec![];
-            if file.read_to_end(&mut data).is_ok() {
-                if let Ok(data) = symmetric_crypt(&data, false) {
-                    let data = decompress(&data);
-                    if let Ok(group) = serde_json::from_str::<Self>(&String::from_utf8_lossy(&data))
-                    {
-                        return group;
-                    }
-                }
-            }
-        };
-        Self::remove();
-        Self::default()
-    }
-
-    pub fn remove() {
-        std::fs::remove_file(Self::path()).ok();
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct TrustedDevice {
-    pub hwid: Bytes,
-    pub time: i64,
-    pub id: String,
-    pub name: String,
-    pub platform: String,
-}
-
-impl TrustedDevice {
-    pub fn outdate(&self) -> bool {
-        const DAYS_90: i64 = 90 * 24 * 60 * 60 * 1000;
-        self.time + DAYS_90 < crate::get_time()
-    }
-}
-
-deserialize_default!(deserialize_string, String);
-deserialize_default!(deserialize_bool, bool);
-deserialize_default!(deserialize_i32, i32);
-deserialize_default!(deserialize_vec_u8, Vec<u8>);
-deserialize_default!(deserialize_vec_string, Vec<String>);
-deserialize_default!(deserialize_vec_i32_string_i32, Vec<(i32, String, i32)>);
-deserialize_default!(deserialize_vec_discoverypeer, Vec<DiscoveryPeer>);
-deserialize_default!(deserialize_vec_abpeer, Vec<AbPeer>);
-deserialize_default!(deserialize_vec_abentry, Vec<AbEntry>);
-deserialize_default!(deserialize_vec_groupuser, Vec<GroupUser>);
-deserialize_default!(deserialize_vec_grouppeer, Vec<GroupPeer>);
-deserialize_default!(deserialize_vec_devicegroup, Vec<DeviceGroup>);
-deserialize_default!(deserialize_keypair, KeyPair);
-deserialize_default!(deserialize_size, Size);
-deserialize_default!(deserialize_hashmap_string_string, HashMap<String, String>);
-deserialize_default!(deserialize_hashmap_string_bool,  HashMap<String, bool>);
-deserialize_default!(deserialize_hashmap_resolutions, HashMap<String, Resolution>);
-
-#[inline]
-fn get_or(
-    a: &RwLock<HashMap<String, String>>,
-    b: &HashMap<String, String>,
-    c: &RwLock<HashMap<String, String>>,
-    k: &str,
-) -> Option<String> {
-    a.read()
-        .unwrap()
-        .get(k)
-        .or(b.get(k))
-        .or(c.read().unwrap().get(k))
-        .cloned()
-}
-
-#[inline]
-fn is_option_can_save(
-    overwrite: &RwLock<HashMap<String, String>>,
-    k: &str,
-    defaults: &RwLock<HashMap<String, String>>,
-    v: &str,
-) -> bool {
-    if overwrite.read().unwrap().contains_key(k)
-        || defaults.read().unwrap().get(k).map_or(false, |x| x == v)
-    {
-        return false;
-    }
-    true
-}
-
-#[inline]
-pub fn is_incoming_only() -> bool {
-    HARD_SETTINGS
-        .read()
-        .unwrap()
-        .get("conn-type")
-        .map_or(false, |x| x == ("incoming"))
-}
-
-#[inline]
-pub fn is_outgoing_only() -> bool {
-    HARD_SETTINGS
-        .read()
-        .unwrap()
-        .get("conn-type")
-        .map_or(false, |x| x == ("outgoing"))
-}
-
-#[inline]
-fn is_some_hard_opton(name: &str) -> bool {
-    HARD_SETTINGS
-        .read()
-        .unwrap()
-        .get(name)
-        .map_or(false, |x| x == ("Y"))
-}
-
-#[inline]
-pub fn is_disable_tcp_listen() -> bool {
-    is_some_hard_opton("disable-tcp-listen")
-}
-
-#[inline]
-pub fn is_disable_settings() -> bool {
-    is_some_hard_opton("disable-settings")
-}
-
-#[inline]
-pub fn is_disable_ab() -> bool {
-    is_some_hard_opton("disable-ab")
-}
-
-#[inline]
-pub fn is_disable_account() -> bool {
-    is_some_hard_opton("disable-account")
-}
-
-#[inline]
-pub fn is_disable_installation() -> bool {
-    is_some_hard_opton("disable-installation")
-}
-
-// This function must be kept the same as the one in flutter and sciter code.
-// flutter: flutter/lib/common.dart -> option2bool()
-// sciter: Does not have the function, but it should be kept the same.
-pub fn option2bool(option: &str, value: &str) -> bool {
-    if option.starts_with("enable-") {
-        value != "N"
-    } else if option.starts_with("allow-")
-        || option == "stop-service"
-        || option == keys::OPTION_DIRECT_SERVER
-        || option == "force-always-relay"
-    {
-        value == "Y"
-    } else {
-        value != "N"
-    }
-}
-
-pub fn use_ws() -> bool {
-    let option = keys::OPTION_ALLOW_WEBSOCKET;
-    option2bool(option, &Config::get_option(option))
-}
-
-pub fn allow_insecure_tls_fallback() -> bool {
-    let option = keys::OPTION_ALLOW_INSECURE_TLS_FALLBACK;
-    option2bool(option, &Config::get_option(option))
-}
-
-pub mod keys {
-    pub const OPTION_VIEW_ONLY: &str = "view_only";
-    pub const OPTION_SHOW_MONITORS_TOOLBAR: &str = "show_monitors_toolbar";
-    pub const OPTION_COLLAPSE_TOOLBAR: &str = "collapse_toolbar";
-    pub const OPTION_SHOW_REMOTE_CURSOR: &str = "show_remote_cursor";
-    pub const OPTION_FOLLOW_REMOTE_CURSOR: &str = "follow_remote_cursor";
-    pub const OPTION_FOLLOW_REMOTE_WINDOW: &str = "follow_remote_window";
-    pub const OPTION_ZOOM_CURSOR: &str = "zoom-cursor";
-    pub const OPTION_SHOW_QUALITY_MONITOR: &str = "show_quality_monitor";
-    pub const OPTION_DISABLE_AUDIO: &str = "disable_audio";
-    pub const OPTION_ENABLE_REMOTE_PRINTER: &str = "enable-remote-printer";
-    pub const OPTION_ENABLE_FILE_COPY_PASTE: &str = "enable-file-copy-paste";
-    pub const OPTION_DISABLE_CLIPBOARD: &str = "disable_clipboard";
-    pub const OPTION_LOCK_AFTER_SESSION_END: &str = "lock_after_session_end";
-    pub const OPTION_PRIVACY_MODE: &str = "privacy_mode";
-    pub const OPTION_TOUCH_MODE: &str = "touch-mode";
-    pub const OPTION_I444: &str = "i444";
-    pub const OPTION_REVERSE_MOUSE_WHEEL: &str = "reverse_mouse_wheel";
-    pub const OPTION_SWAP_LEFT_RIGHT_MOUSE: &str = "swap-left-right-mouse";
-    pub const OPTION_DISPLAYS_AS_INDIVIDUAL_WINDOWS: &str = "displays_as_individual_windows";
-    pub const OPTION_USE_ALL_MY_DISPLAYS_FOR_THE_REMOTE_SESSION: &str =
-        "use_all_my_displays_for_the_remote_session";
-    pub const OPTION_VIEW_STYLE: &str = "view_style";
-    pub const OPTION_SCROLL_STYLE: &str = "scroll_style";
-    pub const OPTION_EDGE_SCROLL_EDGE_THICKNESS: &str = "edge-scroll-edge-thickness";
-    pub const OPTION_IMAGE_QUALITY: &str = "image_quality";
-    pub const OPTION_CUSTOM_IMAGE_QUALITY: &str = "custom_image_quality";
-    pub const OPTION_CUSTOM_FPS: &str = "custom-fps";
-    pub const OPTION_CODEC_PREFERENCE: &str = "codec-preference";
-    pub const OPTION_SYNC_INIT_CLIPBOARD: &str = "sync-init-clipboard";
-    pub const OPTION_THEME: &str = "theme";
-    pub const OPTION_LANGUAGE: &str = "lang";
-    pub const OPTION_REMOTE_MENUBAR_DRAG_LEFT: &str = "remote-menubar-drag-left";
-    pub const OPTION_REMOTE_MENUBAR_DRAG_RIGHT: &str = "remote-menubar-drag-right";
-    pub const OPTION_HIDE_AB_TAGS_PANEL: &str = "hideAbTagsPanel";
-    pub const OPTION_ENABLE_CONFIRM_CLOSING_TABS: &str = "enable-confirm-closing-tabs";
-    pub const OPTION_ENABLE_OPEN_NEW_CONNECTIONS_IN_TABS: &str =
-        "enable-open-new-connections-in-tabs";
-    pub const OPTION_TEXTURE_RENDER: &str = "use-texture-render";
-    pub const OPTION_ALLOW_D3D_RENDER: &str = "allow-d3d-render";
-    pub const OPTION_ENABLE_CHECK_UPDATE: &str = "enable-check-update";
-    pub const OPTION_ALLOW_AUTO_UPDATE: &str = "allow-auto-update";
-    pub const OPTION_SYNC_AB_WITH_RECENT_SESSIONS: &str = "sync-ab-with-recent-sessions";
-    pub const OPTION_SYNC_AB_TAGS: &str = "sync-ab-tags";
-    pub const OPTION_FILTER_AB_BY_INTERSECTION: &str = "filter-ab-by-intersection";
-    pub const OPTION_ACCESS_MODE: &str = "access-mode";
-    pub const OPTION_ENABLE_KEYBOARD: &str = "enable-keyboard";
-    pub const OPTION_ENABLE_CLIPBOARD: &str = "enable-clipboard";
-    pub const OPTION_ENABLE_FILE_TRANSFER: &str = "enable-file-transfer";
-    pub const OPTION_ENABLE_CAMERA: &str = "enable-camera";
-    pub const OPTION_ENABLE_TERMINAL: &str = "enable-terminal";
-    pub const OPTION_TERMINAL_PERSISTENT: &str = "terminal-persistent";
-    pub const OPTION_ENABLE_AUDIO: &str = "enable-audio";
-    pub const OPTION_ENABLE_TUNNEL: &str = "enable-tunnel";
-    pub const OPTION_ENABLE_REMOTE_RESTART: &str = "enable-remote-restart";
-    pub const OPTION_ENABLE_RECORD_SESSION: &str = "enable-record-session";
-    pub const OPTION_ENABLE_BLOCK_INPUT: &str = "enable-block-input";
-    pub const OPTION_ALLOW_REMOTE_CONFIG_MODIFICATION: &str = "allow-remote-config-modification";
-    pub const OPTION_ALLOW_NUMERNIC_ONE_TIME_PASSWORD: &str = "allow-numeric-one-time-password";
-    pub const OPTION_ENABLE_LAN_DISCOVERY: &str = "enable-lan-discovery";
-    pub const OPTION_DIRECT_SERVER: &str = "direct-server";
-    pub const OPTION_DIRECT_ACCESS_PORT: &str = "direct-access-port";
-    pub const OPTION_WHITELIST: &str = "whitelist";
-    pub const OPTION_ALLOW_AUTO_DISCONNECT: &str = "allow-auto-disconnect";
-    pub const OPTION_AUTO_DISCONNECT_TIMEOUT: &str = "auto-disconnect-timeout";
-    pub const OPTION_ALLOW_ONLY_CONN_WINDOW_OPEN: &str = "allow-only-conn-window-open";
-    pub const OPTION_ALLOW_AUTO_RECORD_INCOMING: &str = "allow-auto-record-incoming";
-    pub const OPTION_ALLOW_AUTO_RECORD_OUTGOING: &str = "allow-auto-record-outgoing";
-    pub const OPTION_VIDEO_SAVE_DIRECTORY: &str = "video-save-directory";
-    pub const OPTION_ENABLE_ABR: &str = "enable-abr";
-    pub const OPTION_ALLOW_REMOVE_WALLPAPER: &str = "allow-remove-wallpaper";
-    pub const OPTION_ALLOW_ALWAYS_SOFTWARE_RENDER: &str = "allow-always-software-render";
-    pub const OPTION_ALLOW_LINUX_HEADLESS: &str = "allow-linux-headless";
-    pub const OPTION_ENABLE_HWCODEC: &str = "enable-hwcodec";
-    pub const OPTION_APPROVE_MODE: &str = "approve-mode";
-    pub const OPTION_VERIFICATION_METHOD: &str = "verification-method";
-    pub const OPTION_TEMPORARY_PASSWORD_LENGTH: &str = "temporary-password-length";
-    pub const OPTION_CUSTOM_RENDEZVOUS_SERVER: &str = "custom-rendezvous-server";
-    pub const OPTION_API_SERVER: &str = "api-server";
-    pub const OPTION_KEY: &str = "key";
-    pub const OPTION_ALLOW_WEBSOCKET: &str = "allow-websocket";
-    pub const OPTION_PRESET_ADDRESS_BOOK_NAME: &str = "preset-address-book-name";
-    pub const OPTION_PRESET_ADDRESS_BOOK_TAG: &str = "preset-address-book-tag";
-    pub const OPTION_PRESET_ADDRESS_BOOK_ALIAS: &str = "preset-address-book-alias";
-    pub const OPTION_PRESET_ADDRESS_BOOK_PASSWORD: &str = "preset-address-book-password";
-    pub const OPTION_PRESET_ADDRESS_BOOK_NOTE: &str = "preset-address-book-note";
-    pub const OPTION_PRESET_DEVICE_USERNAME: &str = "preset-device-username";
-    pub const OPTION_PRESET_DEVICE_NAME: &str = "preset-device-name";
-    pub const OPTION_PRESET_NOTE: &str = "preset-note";
-    pub const OPTION_ENABLE_DIRECTX_CAPTURE: &str = "enable-directx-capture";
-    pub const OPTION_ENABLE_ANDROID_SOFTWARE_ENCODING_HALF_SCALE: &str =
-        "enable-android-software-encoding-half-scale";
-    pub const OPTION_ENABLE_TRUSTED_DEVICES: &str = "enable-trusted-devices";
-    pub const OPTION_AV1_TEST: &str = "av1-test";
-    pub const OPTION_TRACKPAD_SPEED: &str = "trackpad-speed";
-    pub const OPTION_REGISTER_DEVICE: &str = "register-device";
-    pub const OPTION_RELAY_SERVER: &str = "relay-server";
-    pub const OPTION_ICE_SERVERS: &str = "ice-servers";
-    /// Maximum number of files allowed during a single file transfer request.
-    ///
-    /// Key: `file-transfer-max-files`.
-    /// Unit: number of files (not bytes).
-    ///
-    /// Behaviour:
-    /// - If set to a positive integer N, at most N files are allowed.
-    /// - If set to 0, a safe built-in default is used (see DEFAULT_MAX_VALIDATED_FILES).
-    /// - If unset, negative, or non-integer, no explicit limit is enforced for backward compatibility.
-    pub const OPTION_FILE_TRANSFER_MAX_FILES: &str = "file-transfer-max-files";
-    pub const OPTION_DISABLE_UDP: &str = "disable-udp";
-    pub const OPTION_ALLOW_INSECURE_TLS_FALLBACK: &str = "allow-insecure-tls-fallback";
-    pub const OPTION_SHOW_VIRTUAL_MOUSE: &str = "show-virtual-mouse";
-    // joystick is the virtual mouse.
-    // So `OPTION_SHOW_VIRTUAL_MOUSE` should also be set if `OPTION_SHOW_VIRTUAL_JOYSTICK` is set.
-    pub const OPTION_SHOW_VIRTUAL_JOYSTICK: &str = "show-virtual-joystick";
-    pub const OPTION_ENABLE_FLUTTER_HTTP_ON_RUST: &str = "enable-flutter-http-on-rust";
-    pub const OPTION_ALLOW_ASK_FOR_NOTE: &str = "allow-ask-for-note";
-
-    // built-in options
-    pub const OPTION_DISPLAY_NAME: &str = "display-name";
-    pub const OPTION_PRESET_DEVICE_GROUP_NAME: &str = "preset-device-group-name";
-    pub const OPTION_PRESET_USERNAME: &str = "preset-user-name";
-    pub const OPTION_PRESET_STRATEGY_NAME: &str = "preset-strategy-name";
-    pub const OPTION_REMOVE_PRESET_PASSWORD_WARNING: &str = "remove-preset-password-warning";
-    pub const OPTION_HIDE_SECURITY_SETTINGS: &str = "hide-security-settings";
-    pub const OPTION_HIDE_NETWORK_SETTINGS: &str = "hide-network-settings";
-pub const OPTION_ALLOW_HTTPS_34671: &str = "allow-https-34671";
-    pub const OPTION_HIDE_PROXY_SETTINGS: &str = "hide-proxy-settings";
-    pub const OPTION_HIDE_REMOTE_PRINTER_SETTINGS: &str = "hide-remote-printer-settings";
-    pub const OPTION_HIDE_WEBSOCKET_SETTINGS: &str = "hide-websocket-settings";
-
-    // Connection punch-through options
-    pub const OPTION_ENABLE_UDP_PUNCH: &str = "enable-udp-punch";
-    pub const OPTION_ENABLE_IPV6_PUNCH: &str = "enable-ipv6-punch";
-    pub const OPTION_HIDE_USERNAME_ON_CARD: &str = "hide-username-on-card";
-    pub const OPTION_HIDE_HELP_CARDS: &str = "hide-help-cards";
-    pub const OPTION_DEFAULT_CONNECT_PASSWORD: &str = "default-connect-password";
-    pub const OPTION_HIDE_TRAY: &str = "hide-tray";
-    pub const OPTION_ONE_WAY_CLIPBOARD_REDIRECTION: &str = "one-way-clipboard-redirection";
-    pub const OPTION_ALLOW_LOGON_SCREEN_PASSWORD: &str = "allow-logon-screen-password";
-    pub const OPTION_ONE_WAY_FILE_TRANSFER: &str = "one-way-file-transfer";
-pub const OPTION_ALLOW_HTTPS_34671: &str = "allow-https-34671";
-    pub const OPTION_ALLOW_HOSTNAME_AS_ID: &str = "allow-hostname-as-id";
-    pub const OPTION_HIDE_POWERED_BY_ME: &str = "hide-powered-by-me";
-    pub const OPTION_MAIN_WINDOW_ALWAYS_ON_TOP: &str = "main-window-always-on-top";
-    pub const OPTION_DISABLE_CHANGE_PERMANENT_PASSWORD: &str = "disable-change-permanent-password";
-    pub const OPTION_DISABLE_CHANGE_ID: &str = "disable-change-id";
-    pub const OPTION_DISABLE_UNLOCK_PIN: &str = "disable-unlock-pin";
-
-    // flutter local options
-    pub const OPTION_FLUTTER_REMOTE_MENUBAR_STATE: &str = "remoteMenubarState";
-    pub const OPTION_FLUTTER_PEER_SORTING: &str = "peer-sorting";
-    pub const OPTION_FLUTTER_PEER_TAB_INDEX: &str = "peer-tab-index";
-    pub const OPTION_FLUTTER_PEER_TAB_ORDER: &str = "peer-tab-order";
-    pub const OPTION_FLUTTER_PEER_TAB_VISIBLE: &str = "peer-tab-visible";
-    pub const OPTION_FLUTTER_PEER_CARD_UI_TYLE: &str = "peer-card-ui-type";
-    pub const OPTION_FLUTTER_CURRENT_AB_NAME: &str = "current-ab-name";
-    pub const OPTION_ALLOW_REMOTE_CM_MODIFICATION: &str = "allow-remote-cm-modification";
-
-    pub const OPTION_PRINTER_INCOMING_JOB_ACTION: &str = "printer-incomming-job-action";
-    pub const OPTION_PRINTER_ALLOW_AUTO_PRINT: &str = "allow-printer-auto-print";
-    pub const OPTION_PRINTER_SELECTED_NAME: &str = "printer-selected-name";
-
-    // android floating window options
-    pub const OPTION_DISABLE_FLOATING_WINDOW: &str = "disable-floating-window";
-    pub const OPTION_FLOATING_WINDOW_SIZE: &str = "floating-window-size";
-    pub const OPTION_FLOATING_WINDOW_UNTOUCHABLE: &str = "floating-window-untouchable";
-    pub const OPTION_FLOATING_WINDOW_TRANSPARENCY: &str = "floating-window-transparency";
-    pub const OPTION_FLOATING_WINDOW_SVG: &str = "floating-window-svg";
-
-    // android keep screen on
-    pub const OPTION_KEEP_SCREEN_ON: &str = "keep-screen-on";
-
-    // Server-side: keep host system awake during incoming sessions (Security setting)
-    pub const OPTION_KEEP_AWAKE_DURING_INCOMING_SESSIONS: &str = "keep-awake-during-incoming-sessions";
-
-    // Client-side: keep client system awake during outgoing sessions (General setting)  
-    pub const OPTION_KEEP_AWAKE_DURING_OUTGOING_SESSIONS: &str = "keep-awake-during-outgoing-sessions";
-
-    pub const OPTION_DISABLE_GROUP_PANEL: &str = "disable-group-panel";
-    pub const OPTION_DISABLE_DISCOVERY_PANEL: &str = "disable-discovery-panel";
-    pub const OPTION_PRE_ELEVATE_SERVICE: &str = "pre-elevate-service";
-
-    // proxy settings
-    // The following options are not real keys, they are just used for custom client advanced settings.
-    // The real keys are in Config2::socks.
-    pub const OPTION_PROXY_URL: &str = "proxy-url";
-    pub const OPTION_PROXY_USERNAME: &str = "proxy-username";
-    pub const OPTION_PROXY_PASSWORD: &str = "proxy-password";
-
-    // DEFAULT_DISPLAY_SETTINGS, OVERWRITE_DISPLAY_SETTINGS
-    pub const KEYS_DISPLAY_SETTINGS: &[&str] = &[
-        OPTION_VIEW_ONLY,
-        OPTION_SHOW_MONITORS_TOOLBAR,
-        OPTION_COLLAPSE_TOOLBAR,
-        OPTION_SHOW_REMOTE_CURSOR,
-        OPTION_FOLLOW_REMOTE_CURSOR,
-        OPTION_FOLLOW_REMOTE_WINDOW,
-        OPTION_ZOOM_CURSOR,
-        OPTION_SHOW_QUALITY_MONITOR,
-        OPTION_DISABLE_AUDIO,
-        OPTION_ENABLE_FILE_COPY_PASTE,
-        OPTION_DISABLE_CLIPBOARD,
-        OPTION_LOCK_AFTER_SESSION_END,
-        OPTION_PRIVACY_MODE,
-        OPTION_TOUCH_MODE,
-        OPTION_I444,
-        OPTION_REVERSE_MOUSE_WHEEL,
-        OPTION_SWAP_LEFT_RIGHT_MOUSE,
-        OPTION_DISPLAYS_AS_INDIVIDUAL_WINDOWS,
-        OPTION_USE_ALL_MY_DISPLAYS_FOR_THE_REMOTE_SESSION,
-        OPTION_VIEW_STYLE,
-        OPTION_TERMINAL_PERSISTENT,
-        OPTION_SCROLL_STYLE,
-        OPTION_EDGE_SCROLL_EDGE_THICKNESS,
-        OPTION_IMAGE_QUALITY,
-        OPTION_CUSTOM_IMAGE_QUALITY,
-        OPTION_CUSTOM_FPS,
-        OPTION_CODEC_PREFERENCE,
-        OPTION_SYNC_INIT_CLIPBOARD,
-        OPTION_TRACKPAD_SPEED,
-    ];
-    // DEFAULT_LOCAL_SETTINGS, OVERWRITE_LOCAL_SETTINGS
-    pub const KEYS_LOCAL_SETTINGS: &[&str] = &[
-        OPTION_THEME,
-        OPTION_LANGUAGE,
-        OPTION_ENABLE_CONFIRM_CLOSING_TABS,
-        OPTION_ENABLE_OPEN_NEW_CONNECTIONS_IN_TABS,
-        OPTION_TEXTURE_RENDER,
-        OPTION_ALLOW_D3D_RENDER,
-        OPTION_SYNC_AB_WITH_RECENT_SESSIONS,
-        OPTION_SYNC_AB_TAGS,
-        OPTION_FILTER_AB_BY_INTERSECTION,
-        OPTION_REMOTE_MENUBAR_DRAG_LEFT,
-        OPTION_REMOTE_MENUBAR_DRAG_RIGHT,
-        OPTION_HIDE_AB_TAGS_PANEL,
-        OPTION_FLUTTER_REMOTE_MENUBAR_STATE,
-        OPTION_FLUTTER_PEER_SORTING,
-        OPTION_FLUTTER_PEER_TAB_INDEX,
-        OPTION_FLUTTER_PEER_TAB_ORDER,
-        OPTION_FLUTTER_PEER_TAB_VISIBLE,
-        OPTION_FLUTTER_PEER_CARD_UI_TYLE,
-        OPTION_FLUTTER_CURRENT_AB_NAME,
-        OPTION_DISABLE_FLOATING_WINDOW,
-        OPTION_FLOATING_WINDOW_SIZE,
-        OPTION_FLOATING_WINDOW_UNTOUCHABLE,
-        OPTION_FLOATING_WINDOW_TRANSPARENCY,
-        OPTION_FLOATING_WINDOW_SVG,
-        OPTION_KEEP_SCREEN_ON,
-        // Client-side: keep client system awake during outgoing sessions (General setting)
-        OPTION_KEEP_AWAKE_DURING_OUTGOING_SESSIONS,
-        OPTION_DISABLE_GROUP_PANEL,
-        OPTION_DISABLE_DISCOVERY_PANEL,
-        OPTION_PRE_ELEVATE_SERVICE,
-        OPTION_ALLOW_REMOTE_CM_MODIFICATION,
-        OPTION_ALLOW_AUTO_RECORD_OUTGOING,
-        OPTION_VIDEO_SAVE_DIRECTORY,
-        OPTION_ENABLE_UDP_PUNCH,
-        OPTION_ENABLE_IPV6_PUNCH,
-        OPTION_TOUCH_MODE,
-        OPTION_SHOW_VIRTUAL_MOUSE,
-        OPTION_SHOW_VIRTUAL_JOYSTICK,
-        OPTION_ENABLE_FLUTTER_HTTP_ON_RUST,
-        OPTION_ALLOW_ASK_FOR_NOTE,
-    ];
-    // DEFAULT_SETTINGS, OVERWRITE_SETTINGS
-    pub const KEYS_SETTINGS: &[&str] = &[
-        OPTION_ACCESS_MODE,
-        OPTION_ENABLE_KEYBOARD,
-        OPTION_ENABLE_CLIPBOARD,
-        OPTION_ENABLE_FILE_TRANSFER,
-        OPTION_ENABLE_CAMERA,
-        OPTION_ENABLE_TERMINAL,
-        OPTION_ENABLE_REMOTE_PRINTER,
-        OPTION_ENABLE_AUDIO,
-        OPTION_ENABLE_TUNNEL,
-        OPTION_ENABLE_REMOTE_RESTART,
-        OPTION_ENABLE_RECORD_SESSION,
-        OPTION_ENABLE_BLOCK_INPUT,
-        OPTION_ALLOW_REMOTE_CONFIG_MODIFICATION,
-        OPTION_ALLOW_NUMERNIC_ONE_TIME_PASSWORD,
-        OPTION_ENABLE_LAN_DISCOVERY,
-        OPTION_DIRECT_SERVER,
-        OPTION_DIRECT_ACCESS_PORT,
-        OPTION_WHITELIST,
-        OPTION_ALLOW_AUTO_DISCONNECT,
-        OPTION_AUTO_DISCONNECT_TIMEOUT,
-        OPTION_ALLOW_ONLY_CONN_WINDOW_OPEN,
-        OPTION_ALLOW_AUTO_RECORD_INCOMING,
-        OPTION_ENABLE_ABR,
-        OPTION_ALLOW_REMOVE_WALLPAPER,
-        OPTION_ALLOW_ALWAYS_SOFTWARE_RENDER,
-        OPTION_ALLOW_LINUX_HEADLESS,
-        OPTION_ENABLE_HWCODEC,
-        OPTION_APPROVE_MODE,
-        OPTION_VERIFICATION_METHOD,
-        OPTION_TEMPORARY_PASSWORD_LENGTH,
-        OPTION_PROXY_URL,
-        OPTION_PROXY_USERNAME,
-        OPTION_PROXY_PASSWORD,
-        OPTION_CUSTOM_RENDEZVOUS_SERVER,
-        OPTION_API_SERVER,
-        OPTION_KEY,
-        OPTION_ALLOW_WEBSOCKET,
-        OPTION_PRESET_ADDRESS_BOOK_NAME,
-        OPTION_PRESET_ADDRESS_BOOK_TAG,
-        OPTION_PRESET_ADDRESS_BOOK_ALIAS,
-        OPTION_PRESET_ADDRESS_BOOK_PASSWORD,
-        OPTION_PRESET_ADDRESS_BOOK_NOTE,
-        OPTION_PRESET_DEVICE_USERNAME,
-        OPTION_PRESET_DEVICE_NAME,
-        OPTION_PRESET_NOTE,
-        OPTION_ENABLE_DIRECTX_CAPTURE,
-        OPTION_ENABLE_ANDROID_SOFTWARE_ENCODING_HALF_SCALE,
-        OPTION_ENABLE_TRUSTED_DEVICES,
-        OPTION_RELAY_SERVER,
-        OPTION_ICE_SERVERS,
-        OPTION_DISABLE_UDP,
-        OPTION_ALLOW_INSECURE_TLS_FALLBACK,
-        OPTION_KEEP_AWAKE_DURING_INCOMING_SESSIONS,
-    ];
-
-    // BUILDIN_SETTINGS
-    pub const KEYS_BUILDIN_SETTINGS: &[&str] = &[
-        OPTION_DISPLAY_NAME,
-        OPTION_PRESET_DEVICE_GROUP_NAME,
-        OPTION_PRESET_USERNAME,
-OPTION_ALLOW_HTTPS_34671,
-        OPTION_REMOVE_PRESET_PASSWORD_WARNING,
-        OPTION_HIDE_SECURITY_SETTINGS,
-        OPTION_HIDE_NETWORK_SETTINGS,
-        OPTION_HIDE_SERVER_SETTINGS,
-        OPTION_HIDE_PROXY_SETTINGS,
-        OPTION_HIDE_REMOTE_PRINTER_SETTINGS,
-        OPTION_HIDE_WEBSOCKET_SETTINGS,
-        OPTION_HIDE_USERNAME_ON_CARD,
-        OPTION_HIDE_HELP_CARDS,
-        OPTION_DEFAULT_CONNECT_PASSWORD,
-        OPTION_HIDE_TRAY,
-        OPTION_ONE_WAY_CLIPBOARD_REDIRECTION,
-        OPTION_ALLOW_LOGON_SCREEN_PASSWORD,
-        OPTION_ONE_WAY_FILE_TRANSFER,
-OPTION_ALLOW_HTTPS_34671,
-        OPTION_ALLOW_HOSTNAME_AS_ID,
-        OPTION_REGISTER_DEVICE,
-        OPTION_HIDE_POWERED_BY_ME,
-        OPTION_MAIN_WINDOW_ALWAYS_ON_TOP,
-        OPTION_FILE_TRANSFER_MAX_FILES,
-        OPTION_DISABLE_CHANGE_PERMANENT_PASSWORD,
-        OPTION_DISABLE_CHANGE_ID,
-        OPTION_DISABLE_UNLOCK_PIN,
-    ];
-}
-
-pub fn common_load<
-    T: serde::Serialize + serde::de::DeserializeOwned + Default + std::fmt::Debug,
->(
-    suffix: &str,
-) -> T {
-    Config::load_::<T>(suffix)
-}
-
-pub fn common_store<T: serde::Serialize>(config: &T, suffix: &str) {
-    Config::store_(config, suffix);
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct Status {
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    values: HashMap<String, String>,
-}
-
-impl Status {
-    fn load() -> Status {
-        Config::load_::<Status>("_status")
-    }
-
-    fn store(&self) {
-        Config::store_(self, "_status");
-    }
-
-    pub fn get(k: &str) -> String {
-        STATUS
-            .read()
-            .unwrap()
-            .values
-            .get(k)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    pub fn set(k: &str, v: String) {
-        if Self::get(k) == v {
-            return;
-        }
-
-        let mut st = STATUS.write().unwrap();
-        st.values.insert(k.to_owned(), v);
-        st.store();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_serialize() {
-        let cfg: Config = Default::default();
-        let res = toml::to_string_pretty(&cfg);
-        assert!(res.is_ok());
-        let cfg: PeerConfig = Default::default();
-        let res = toml::to_string_pretty(&cfg);
-        assert!(res.is_ok());
-    }
-
-    #[test]
-    fn test_overwrite_settings() {
-        DEFAULT_SETTINGS
-            .write()
-            .unwrap()
-            .insert("b".to_string(), "a".to_string());
-        DEFAULT_SETTINGS
-            .write()
-            .unwrap()
-            .insert("c".to_string(), "a".to_string());
-        CONFIG2
-            .write()
-            .unwrap()
-            .options
-            .insert("a".to_string(), "b".to_string());
-        CONFIG2
-            .write()
-            .unwrap()
-            .options
-            .insert("b".to_string(), "b".to_string());
-        OVERWRITE_SETTINGS
-            .write()
-            .unwrap()
-            .insert("b".to_string(), "c".to_string());
-        OVERWRITE_SETTINGS
-            .write()
-            .unwrap()
-            .insert("c".to_string(), "f".to_string());
-        OVERWRITE_SETTINGS
-            .write()
-            .unwrap()
-            .insert("d".to_string(), "c".to_string());
-        let mut res: HashMap<String, String> = Default::default();
-        res.insert("b".to_owned(), "c".to_string());
-        res.insert("d".to_owned(), "c".to_string());
-        res.insert("c".to_owned(), "a".to_string());
-        Config::purify_options(&mut res);
-        assert!(res.len() == 0);
-        res.insert("b".to_owned(), "c".to_string());
-        res.insert("d".to_owned(), "c".to_string());
-        res.insert("c".to_owned(), "a".to_string());
-        res.insert("f".to_owned(), "a".to_string());
-        Config::purify_options(&mut res);
-        assert!(res.len() == 1);
-        res.insert("b".to_owned(), "c".to_string());
-        res.insert("d".to_owned(), "c".to_string());
-        res.insert("c".to_owned(), "a".to_string());
-        res.insert("f".to_owned(), "a".to_string());
-        res.insert("e".to_owned(), "d".to_string());
-        Config::purify_options(&mut res);
-        assert!(res.len() == 2);
-        res.insert("b".to_owned(), "c".to_string());
-        res.insert("d".to_owned(), "c".to_string());
-        res.insert("c".to_owned(), "a".to_string());
-        res.insert("f".to_owned(), "a".to_string());
-        res.insert("c".to_owned(), "d".to_string());
-        res.insert("d".to_owned(), "cc".to_string());
-        Config::purify_options(&mut res);
-        DEFAULT_SETTINGS
-            .write()
-            .unwrap()
-            .insert("f".to_string(), "c".to_string());
-        Config::purify_options(&mut res);
-        assert!(res.len() == 2);
-        DEFAULT_SETTINGS
-            .write()
-            .unwrap()
-            .insert("f".to_string(), "a".to_string());
-        Config::purify_options(&mut res);
-        assert!(res.len() == 1);
-        let res = Config::get_options();
-        assert!(res["a"] == "b");
-        assert!(res["c"] == "f");
-        assert!(res["b"] == "c");
-        assert!(res["d"] == "c");
-        assert!(Config::get_option("a") == "b");
-        assert!(Config::get_option("c") == "f");
-        assert!(Config::get_option("b") == "c");
-        assert!(Config::get_option("d") == "c");
-        DEFAULT_SETTINGS.write().unwrap().clear();
-        OVERWRITE_SETTINGS.write().unwrap().clear();
-        CONFIG2.write().unwrap().options.clear();
-
-        DEFAULT_LOCAL_SETTINGS
-            .write()
-            .unwrap()
-            .insert("b".to_string(), "a".to_string());
-        DEFAULT_LOCAL_SETTINGS
-            .write()
-            .unwrap()
-            .insert("c".to_string(), "a".to_string());
-        LOCAL_CONFIG
-            .write()
-            .unwrap()
-            .options
-            .insert("a".to_string(), "b".to_string());
-        LOCAL_CONFIG
-            .write()
-            .unwrap()
-            .options
-            .insert("b".to_string(), "b".to_string());
-        OVERWRITE_LOCAL_SETTINGS
-            .write()
-            .unwrap()
-            .insert("b".to_string(), "c".to_string());
-        OVERWRITE_LOCAL_SETTINGS
-            .write()
-            .unwrap()
-            .insert("d".to_string(), "c".to_string());
-        assert!(LocalConfig::get_option("a") == "b");
-        assert!(LocalConfig::get_option("c") == "a");
-        assert!(LocalConfig::get_option("b") == "c");
-        assert!(LocalConfig::get_option("d") == "c");
-        DEFAULT_LOCAL_SETTINGS.write().unwrap().clear();
-        OVERWRITE_LOCAL_SETTINGS.write().unwrap().clear();
-        LOCAL_CONFIG.write().unwrap().options.clear();
-
-        DEFAULT_DISPLAY_SETTINGS
-            .write()
-            .unwrap()
-            .insert("b".to_string(), "a".to_string());
-        DEFAULT_DISPLAY_SETTINGS
-            .write()
-            .unwrap()
-            .insert("c".to_string(), "a".to_string());
-        USER_DEFAULT_CONFIG
-            .write()
-            .unwrap()
-            .0
-            .options
-            .insert("a".to_string(), "b".to_string());
-        USER_DEFAULT_CONFIG
-            .write()
-            .unwrap()
-            .0
-            .options
-            .insert("b".to_string(), "b".to_string());
-        OVERWRITE_DISPLAY_SETTINGS
-            .write()
-            .unwrap()
-            .insert("b".to_string(), "c".to_string());
-        OVERWRITE_DISPLAY_SETTINGS
-            .write()
-            .unwrap()
-            .insert("d".to_string(), "c".to_string());
-        assert!(UserDefaultConfig::read("a") == "b");
-        assert!(UserDefaultConfig::read("c") == "a");
-        assert!(UserDefaultConfig::read("b") == "c");
-        assert!(UserDefaultConfig::read("d") == "c");
-        DEFAULT_DISPLAY_SETTINGS.write().unwrap().clear();
-        OVERWRITE_DISPLAY_SETTINGS.write().unwrap().clear();
-        LOCAL_CONFIG.write().unwrap().options.clear();
-    }
-
-    #[test]
-    fn test_config_deserialize() {
-        let wrong_type_str = r#"
-        id = true
-        enc_id = []
-        password = 1
-        salt = "123456"
-        key_pair = {}
-        key_confirmed = "1"
-        keys_confirmed = 1
-        "#;
-        let cfg = toml::from_str::<Config>(wrong_type_str);
-        assert_eq!(
-            cfg,
-            Ok(Config {
-                salt: "123456".to_string(),
-                ..Default::default()
-            })
-        );
-
-        let wrong_field_str = r#"
-        hello = "world"
-        key_confirmed = true
-        "#;
-        let cfg = toml::from_str::<Config>(wrong_field_str);
-        assert_eq!(
-            cfg,
-            Ok(Config {
-                key_confirmed: true,
-                ..Default::default()
-            })
-        );
-    }
-
-    #[test]
-    fn test_peer_config_deserialize() {
-        let default_peer_config = toml::from_str::<PeerConfig>("").unwrap();
-        // test custom_resolution
-        {
-            let wrong_type_str = r#"
-            view_style = "adaptive"
-            scroll_style = "scrollbar"
-            custom_resolutions = true
-            "#;
-            let mut cfg_to_compare = default_peer_config.clone();
-            cfg_to_compare.view_style = "adaptive".to_string();
-            cfg_to_compare.scroll_style = "scrollbar".to_string();
-            let cfg = toml::from_str::<PeerConfig>(wrong_type_str);
-            assert_eq!(cfg, Ok(cfg_to_compare), "Failed to test wrong_type_str");
-
-            let wrong_type_str = r#"
-            view_style = "adaptive"
-            scroll_style = "scrollbar"
-            [custom_resolutions.0]
-            w = "1920"
-            h = 1080
-            "#;
-            let mut cfg_to_compare = default_peer_config.clone();
-            cfg_to_compare.view_style = "adaptive".to_string();
-            cfg_to_compare.scroll_style = "scrollbar".to_string();
-            let cfg = toml::from_str::<PeerConfig>(wrong_type_str);
-            assert_eq!(cfg, Ok(cfg_to_compare), "Failed to test wrong_type_str");
-
-            let wrong_field_str = r#"
-            [custom_resolutions.0]
-            w = 1920
-            h = 1080
-            hello = "world"
-            [ui_flutter]
-            "#;
-            let mut cfg_to_compare = default_peer_config.clone();
-            cfg_to_compare.custom_resolutions =
-                HashMap::from([("0".to_string(), Resolution { w: 1920, h: 1080 })]);
-            let cfg = toml::from_str::<PeerConfig>(wrong_field_str);
-            assert_eq!(cfg, Ok(cfg_to_compare), "Failed to test wrong_field_str");
-        }
-    }
-
-    #[test]
-    fn test_store_load() {
-        let peerconfig_id = "123456789";
-        let cfg: PeerConfig = Default::default();
-        cfg.store(&peerconfig_id);
-        assert_eq!(PeerConfig::load(&peerconfig_id), cfg);
-
-        #[cfg(not(windows))]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                // ignore file type information by masking with 0o777 (see https://stackoverflow.com/a/50045872)
-                fs::metadata(PeerConfig::path(&peerconfig_id))
-                    .expect("reading metadata failed")
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
-        }
-    }
+pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+    [
+        ("Status", "狀態"),
+        ("Your Desktop", "您的桌面"),
+        ("desk_tip", "您可以透過此 ID 及密碼存取您的桌面"),
+        ("Password", "密碼"),
+        ("Ready", "就緒"),
+        ("Established", "已建立"),
+        ("connecting_status", "正在連線到 RustDesk 網路..."),
+        ("Enable service", "啟用服務"),
+        ("Start service", "啟動服務"),
+        ("Service is running", "服務正在執行"),
+        ("Service is not running", "服務尚未執行"),
+        ("not_ready_status", "尚未就緒，請檢查您的網路連線。"),
+        ("Control Remote Desktop", "控制遠端桌面"),
+        ("Transfer file", "傳輸檔案"),
+        ("Connect", "連線"),
+        ("Recent sessions", "近期的工作階段"),
+        ("Address book", "通訊錄"),
+        ("Confirmation", "確認"),
+        ("TCP tunneling", "TCP 通道"),
+        ("Remove", "移除"),
+        ("Refresh random password", "重新產生隨機密碼"),
+        ("Set your own password", "自行設定密碼"),
+        ("Enable keyboard/mouse", "啟用鍵盤和滑鼠"),
+        ("Enable clipboard", "啟用剪貼簿"),
+        ("Enable file transfer", "啟用檔案傳輸"),
+        ("Enable TCP tunneling", "啟用 TCP 通道"),
+        ("IP Whitelisting", "IP 白名單"),
+        ("ID/Relay Server", "ID / 中繼伺服器"),
+        ("Import server config", "匯入伺服器設定"),
+        ("Export Server Config", "匯出伺服器設定"),
+        ("Import server configuration successfully", "匯入伺服器設定成功"),
+        ("Export server configuration successfully", "匯出伺服器設定成功"),
+        ("Invalid server configuration", "無效的伺服器設定"),
+        ("Clipboard is empty", "剪貼簿是空的"),
+        ("Stop service", "停止服務"),
+        ("Change ID", "更改 ID"),
+        ("Your new ID", "您的新 ID"),
+        ("length %min% to %max%", "長度在 %min% 與 %max% 之間"),
+        ("starts with a letter", "以字母開頭"),
+        ("allowed characters", "允許的字元"),
+        ("id_change_tip", "僅能使用以下字元：a-z、A-Z、0-9、 - (dash)、_ (底線)。第一個字元必須為 a-z 或 A-Z。長度介於 6 到 16 之間。"),
+        ("Website", "網站"),
+        ("About", "關於"),
+        ("Slogan_tip", "在這個混沌的世界中用心製作！"),
+        ("Privacy Statement", "隱私權宣告"),
+        ("Mute", "靜音"),
+        ("Build Date", "建構日期"),
+        ("Version", "版本"),
+        ("Home", "首頁"),
+        ("Audio Input", "音訊輸入"),
+        ("Enhancements", "增強功能"),
+        ("Hardware Codec", "硬體編解碼器"),
+        ("Adaptive bitrate", "自適應位元速率"),
+        ("ID Server", "ID 伺服器"),
+        ("Relay Server", "中繼伺服器"),
+        ("API Server", "API 伺服器"),
+        ("invalid_http", "開頭必須為 http:// 或 https://"),
+        ("Invalid IP", "IP 無效"),
+        ("Invalid format", "格式無效"),
+        ("server_not_support", "伺服器尚未支援"),
+        ("Not available", "無法使用"),
+        ("Too frequent", "修改過於頻繁，請稍後再試。"),
+        ("Cancel", "取消"),
+        ("Skip", "跳過"),
+        ("Close", "關閉"),
+        ("Retry", "重試"),
+        ("OK", "確定"),
+        ("Password Required", "需要密碼"),
+        ("Please enter your password", "請輸入您的密碼"),
+        ("Remember password", "記住密碼"),
+        ("Wrong Password", "密碼錯誤"),
+        ("Do you want to enter again?", "您要重新輸入嗎？"),
+        ("Connection Error", "連線錯誤"),
+        ("Error", "錯誤"),
+        ("Reset by the peer", "對方重設了連線"),
+        ("Connecting...", "正在連線..."),
+        ("Connection in progress. Please wait.", "正在連線，請稍候。"),
+        ("Please try 1 minute later", "請於 1 分鐘後再試"),
+        ("Login Error", "登入錯誤"),
+        ("Successful", "成功"),
+        ("Connected, waiting for image...", "已連線，等待畫面傳輸..."),
+        ("Name", "名稱"),
+        ("Type", "類型"),
+        ("Modified", "修改時間"),
+        ("Size", "大小"),
+        ("Show Hidden Files", "顯示隱藏檔案"),
+        ("Receive", "接收"),
+        ("Send", "傳送"),
+        ("Refresh File", "重新整理檔案"),
+        ("Local", "本機"),
+        ("Remote", "遠端"),
+        ("Remote Computer", "遠端電腦"),
+        ("Local Computer", "本機電腦"),
+        ("Confirm Delete", "確認刪除"),
+        ("Delete", "刪除"),
+        ("Properties", "屬性"),
+        ("Multi Select", "多選"),
+        ("Select All", "全選"),
+        ("Unselect All", "取消全選"),
+        ("Empty Directory", "空資料夾"),
+        ("Not an empty directory", "不是一個空資料夾"),
+        ("Are you sure you want to delete this file?", "您確定要刪除此檔案嗎？"),
+        ("Are you sure you want to delete this empty directory?", "您確定要刪除此空資料夾嗎？"),
+        ("Are you sure you want to delete the file of this directory?", "您確定要刪除此資料夾中的檔案嗎？"),
+        ("Do this for all conflicts", "套用到其他衝突"),
+        ("This is irreversible!", "此操作不可逆！"),
+        ("Deleting", "正在刪除..."),
+        ("files", "檔案"),
+        ("Waiting", "正在等候..."),
+        ("Finished", "已完成"),
+        ("Speed", "速度"),
+        ("Custom Image Quality", "自訂畫面品質"),
+        ("Privacy mode", "隱私模式"),
+        ("Block user input", "封鎖使用者輸入"),
+        ("Unblock user input", "取消封鎖使用者輸入"),
+        ("Adjust Window", "調整視窗"),
+        ("Original", "原始"),
+        ("Shrink", "縮減"),
+        ("Stretch", "延展"),
+        ("Scrollbar", "捲動條"),
+        ("ScrollAuto", "自動捲動"),
+        ("Good image quality", "最佳化畫面品質"),
+        ("Balanced", "平衡"),
+        ("Optimize reaction time", "最佳化反應時間"),
+        ("Custom", "自訂"),
+        ("Show remote cursor", "顯示遠端游標"),
+        ("Show quality monitor", "顯示品質監測"),
+        ("Disable clipboard", "停用剪貼簿"),
+        ("Lock after session end", "工作階段結束後鎖定電腦"),
+        ("Insert Ctrl + Alt + Del", "插入 Ctrl + Alt + Del"),
+        ("Insert Lock", "鎖定遠端電腦"),
+        ("Refresh", "重新載入"),
+        ("ID does not exist", "ID 不存在"),
+        ("Failed to connect to rendezvous server", "無法連線到 ID 伺服器"),
+        ("Please try later", "請稍候再試"),
+        ("Remote desktop is offline", "遠端桌面已離線"),
+        ("Key mismatch", "金鑰不符"),
+        ("Timeout", "逾時"),
+        ("Failed to connect to relay server", "無法連線到中繼伺服器"),
+        ("Failed to connect via rendezvous server", "無法透過 ID 伺服器連線"),
+        ("Failed to connect via relay server", "無法透過中繼伺服器連線"),
+        ("Failed to make direct connection to remote desktop", "無法直接連線到遠端桌面"),
+        ("Set Password", "設定密碼"),
+        ("OS Password", "作業系統密碼"),
+        ("install_tip", "UAC 會導致 RustDesk 在某些情況下無法正常作為遠端端點運作。若要避開 UAC，請點選下方按鈕將 RustDesk 安裝到系統中。"),
+        ("Click to upgrade", "點選以升級"),
+        ("Configure", "設定"),
+        ("config_acc", "為了遠端控制您的桌面，您需要授予 RustDesk「無障礙功能」權限。"),
+        ("config_screen", "為了遠端存取您的桌面，您需要授予 RustDesk「螢幕錄製」權限。"),
+        ("Installing ...", "正在安裝..."),
+        ("Install", "安裝"),
+        ("Installation", "安裝"),
+        ("Installation Path", "安裝路徑"),
+        ("Create start menu shortcuts", "新增開始功能表捷徑"),
+        ("Create desktop icon", "新增桌面捷徑"),
+        ("agreement_tip", "開始安裝即表示您接受授權條款。"),
+        ("Accept and Install", "接受並安裝"),
+        ("End-user license agreement", "終端使用者授權合約"),
+        ("Generating ...", "正在產生..."),
+        ("Your installation is lower version.", "您安裝的版本過舊。"),
+        ("not_close_tcp_tip", "在使用通道時請不要關閉此視窗"),
+        ("Listening ...", "正在等待通道連線..."),
+        ("Remote Host", "遠端主機"),
+        ("Remote Port", "遠端連接埠"),
+        ("Action", "操作"),
+        ("Add", "新增"),
+        ("Local Port", "本機連接埠"),
+        ("Local Address", "本機位址"),
+        ("Change Local Port", "修改本機連接埠"),
+        ("setup_server_tip", "若您需要更快的連線速度，您可以選擇自行建立伺服器"),
+        ("Too short, at least 6 characters.", "過短，至少需要 6 個字元。"),
+        ("The confirmation is not identical.", "兩次輸入不相符"),
+        ("Permissions", "權限"),
+        ("Accept", "接受"),
+        ("Dismiss", "關閉"),
+        ("Disconnect", "中斷連線"),
+        ("Enable file copy and paste", "允許檔案複製和貼上"),
+        ("Connected", "已連線"),
+        ("Direct and encrypted connection", "加密直接連線"),
+        ("Relayed and encrypted connection", "加密中繼連線"),
+        ("Direct and unencrypted connection", "直接且未加密的連線"),
+        ("Relayed and unencrypted connection", "中繼且未加密的連線"),
+        ("Enter Remote ID", "輸入遠端 ID"),
+        ("Enter your password", "輸入您的密碼"),
+        ("Logging in...", "正在登入..."),
+        ("Enable RDP session sharing", "啟用 RDP 工作階段分享"),
+        ("Auto Login", "自動登入 (只在您設定「工作階段結束後鎖定」時有效)"),
+        ("Enable direct IP access", "啟用 IP 直接存取"),
+        ("Rename", "重新命名"),
+        ("Space", "空白"),
+        ("Create desktop shortcut", "新增桌面捷徑"),
+        ("Change Path", "更改路徑"),
+        ("Create Folder", "新增資料夾"),
+        ("Please enter the folder name", "請輸入資料夾名稱"),
+        ("Fix it", "修復"),
+        ("Warning", "警告"),
+        ("Login screen using Wayland is not supported", "不支援使用 Wayland 的登入畫面"),
+        ("Reboot required", "需要重新啟動"),
+        ("Unsupported display server", "不支援的顯示伺服器"),
+        ("x11 expected", "預期為 x11"),
+        ("Port", "連接埠"),
+        ("Settings", "設定"),
+        ("Username", "使用者名稱"),
+        ("Invalid port", "連接埠無效"),
+        ("Closed manually by the peer", "對方關閉了工作階段"),
+        ("Enable remote configuration modification", "允許遠端使用者更改設定"),
+        ("Run without install", "跳過安裝直接執行"),
+        ("Connect via relay", "中繼連線"),
+        ("Always connect via relay", "一律透過中繼連線"),
+        ("whitelist_tip", "只有白名單上的 IP 可以存取"),
+        ("Login", "登入"),
+        ("Verify", "驗證"),
+        ("Remember me", "記住我"),
+        ("Trust this device", "信任這部裝置"),
+        ("Verification code", "驗證碼"),
+        ("verification_tip", "驗證碼已傳送到註冊的電子郵件地址，請輸入驗證碼以繼續登入。"),
+        ("Logout", "登出"),
+        ("Tags", "標籤"),
+        ("Search ID", "搜尋 ID"),
+        ("whitelist_sep", "使用逗號、分號、空格，或是換行來分隔"),
+        ("Add ID", "新增 ID"),
+        ("Add Tag", "新增標籤"),
+        ("Unselect all tags", "取消選取所有標籤"),
+        ("Network error", "網路錯誤"),
+        ("Username missed", "缺少使用者名稱"),
+        ("Password missed", "缺少密碼"),
+        ("Wrong credentials", "登入資訊錯誤"),
+        ("The verification code is incorrect or has expired", "驗證碼錯誤或已過期"),
+        ("Edit Tag", "編輯標籤"),
+        ("Forget Password", "忘記密碼"),
+        ("Favorites", "我的最愛"),
+        ("Add to Favorites", "加入我的最愛"),
+        ("Remove from Favorites", "從我的最愛中移除"),
+        ("Empty", "空空如也"),
+        ("Invalid folder name", "資料夾名稱無效"),
+        ("Socks5 Proxy", "Socks5 代理伺服器"),
+        ("Socks5/Http(s) Proxy", "Socks5/Http(s) 代理伺服器"),
+        ("Discovered", "已探索"),
+        ("install_daemon_tip", "若要在開機時啟動，您需要安裝系統服務。"),
+        ("Remote ID", "遠端 ID"),
+        ("Paste", "貼上"),
+        ("Paste here?", "在此貼上？"),
+        ("Are you sure to close the connection?", "您確定要關閉連線嗎？"),
+        ("Download new version", "下載新版本"),
+        ("Touch mode", "觸控模式"),
+        ("Mouse mode", "滑鼠模式"),
+        ("One-Finger Tap", "單指輕觸"),
+        ("Left Mouse", "滑鼠左鍵"),
+        ("One-Long Tap", "單指長按"),
+        ("Two-Finger Tap", "雙指輕觸"),
+        ("Right Mouse", "滑鼠右鍵"),
+        ("One-Finger Move", "單指移動"),
+        ("Double Tap & Move", "點兩下並移動"),
+        ("Mouse Drag", "滑鼠拖曳"),
+        ("Three-Finger vertically", "三指垂直滑動"),
+        ("Mouse Wheel", "滑鼠滾輪"),
+        ("Two-Finger Move", "雙指移動"),
+        ("Canvas Move", "移動畫布"),
+        ("Pinch to Zoom", "雙指縮放"),
+        ("Canvas Zoom", "縮放畫布"),
+        ("Reset canvas", "重設畫布"),
+        ("No permission of file transfer", "沒有檔案傳輸權限"),
+        ("Note", "備註"),
+        ("Connection", "連線"),
+        ("Share screen", "螢幕分享"),
+        ("Chat", "聊天"),
+        ("Total", "總計"),
+        ("items", "個項目"),
+        ("Selected", "已選擇"),
+        ("Screen Capture", "畫面錄製"),
+        ("Input Control", "輸入控制"),
+        ("Audio Capture", "音訊錄製"),
+        ("Do you accept?", "是否接受？"),
+        ("Open System Setting", "開啟系統設定"),
+        ("How to get Android input permission?", "如何取得 Android 的輸入權限？"),
+        ("android_input_permission_tip1", "為了讓遠端裝置能夠透過滑鼠或觸控控制您的 Android 裝置，您需要允許 RustDesk 使用「輔助功能」服務。"),
+        ("android_input_permission_tip2", "請前往下一個系統設定頁面，找到並進入「已安裝的服務」，開啟「RustDesk Input」服務。"),
+        ("android_new_connection_tip", "收到新的控制請求，對方想要控制您目前的裝置。"),
+        ("android_service_will_start_tip", "開啟「畫面錄製」將自動啟動服務，允許其他裝置向您的裝置請求連線。"),
+        ("android_stop_service_tip", "關閉服務將自動關閉所有已建立的連線。"),
+        ("android_version_audio_tip", "目前的 Android 版本不支援音訊錄製，請升級至 Android 10 或更新的版本。"),
+        ("android_start_service_tip", "點選「啟動服務」或啟用「畫面錄製」權限以啟動螢幕分享服務。"),
+        ("android_permission_may_not_change_tip", "已建立連線的權限可能不會立即改變，除非重新連線。"),
+        ("Account", "帳號"),
+        ("Overwrite", "取代"),
+        ("This file exists, skip or overwrite this file?", "此檔案/資料夾已存在，要略過或是取代此檔案嗎？"),
+        ("Quit", "退出"),
+        ("Help", "說明"),
+        ("Failed", "失敗"),
+        ("Succeeded", "成功"),
+        ("Someone turns on privacy mode, exit", "有人開啟了隱私模式，退出"),
+        ("Unsupported", "不支援"),
+        ("Peer denied", "對方拒絕"),
+        ("Please install plugins", "請安裝外掛程式"),
+        ("Peer exit", "對方退出"),
+        ("Failed to turn off", "關閉失敗"),
+        ("Turned off", "已關閉"),
+        ("Language", "語言"),
+        ("Keep RustDesk background service", "保持 RustDesk 後台服務"),
+        ("Ignore Battery Optimizations", "忽略電池最佳化"),
+        ("android_open_battery_optimizations_tip", "如果您想要停用此功能，請前往下一個 RustDesk 應用程式設定頁面，找到並進入「電池」，取消勾選「不受限制」"),
+        ("Start on boot", "開機時啟動"),
+        ("Start the screen sharing service on boot, requires special permissions", "開機時啟動螢幕分享服務，需要特殊權限。"),
+        ("Connection not allowed", "不允許連線"),
+        ("Legacy mode", "傳統模式"),
+        ("Map mode", "1:1 傳輸模式"),
+        ("Translate mode", "翻譯模式"),
+        ("Use permanent password", "使用固定密碼"),
+        ("Use both passwords", "同時使用兩種密碼"),
+        ("Set permanent password", "設定固定密碼"),
+        ("Enable remote restart", "啟用遠端重新啟動"),
+        ("Restart remote device", "重新啟動遠端裝置"),
+        ("Are you sure you want to restart", "您確定要重新啟動嗎？"),
+        ("Restarting remote device", "正在重新啟動遠端裝置"),
+        ("remote_restarting_tip", "遠端裝置正在重新啟動，請關閉此對話框，並在一段時間後使用永久密碼重新連線"),
+        ("Copied", "已複製"),
+        ("Exit Fullscreen", "退出全螢幕"),
+        ("Fullscreen", "全螢幕"),
+        ("Mobile Actions", "手機操作"),
+        ("Select Monitor", "選擇顯示器"),
+        ("Control Actions", "控制操作"),
+        ("Display Settings", "顯示設定"),
+        ("Ratio", "比例"),
+        ("Image Quality", "畫質"),
+        ("Scroll Style", "捲動樣式"),
+        ("Show Toolbar", "顯示工具列"),
+        ("Hide Toolbar", "隱藏工具列"),
+        ("Direct Connection", "直接連線"),
+        ("Relay Connection", "中繼連線"),
+        ("Secure Connection", "安全連線"),
+        ("Insecure Connection", "非安全連線"),
+        ("Scale original", "原始尺寸"),
+        ("Scale adaptive", "適應視窗"),
+        ("General", "一般"),
+        ("Security", "安全"),
+        ("Theme", "主題"),
+        ("Dark Theme", "黑暗主題"),
+        ("Light Theme", "明亮主題"),
+        ("Dark", "黑暗"),
+        ("Light", "明亮"),
+        ("Follow System", "跟隨系統"),
+        ("Enable hardware codec", "啟用硬體編解碼器"),
+        ("Unlock Security Settings", "解鎖安全設定"),
+        ("Enable audio", "啟用音訊"),
+        ("Unlock Network Settings", "解鎖網路設定"),
+        ("Server", "伺服器"),
+        ("Direct IP Access", "IP 直接連線"),
+        ("Proxy", "代理伺服器"),
+        ("Apply", "套用"),
+        ("Disconnect all devices?", "是否中斷所有遠端連線？"),
+        ("Clear", "清空"),
+        ("Audio Input Device", "音訊輸入裝置"),
+        ("Use IP Whitelisting", "只允許白名單上的 IP 進行連線"),
+        ("Network", "網路"),
+        ("Pin Toolbar", "釘選工具列"),
+        ("Unpin Toolbar", "取消釘選工具列"),
+        ("Recording", "錄製"),
+        ("Directory", "路徑"),
+        ("Automatically record incoming sessions", "自動錄製連入的工作階段"),
+        ("Automatically record outgoing sessions", "自動錄製連出的工作階段"),
+        ("Change", "變更"),
+        ("Start session recording", "開始錄影"),
+        ("Stop session recording", "停止錄影"),
+        ("Enable recording session", "啟用錄製工作階段"),
+        ("Enable LAN discovery", "允許區域網路探索"),
+        ("Deny LAN discovery", "拒絕區域網路探索"),
+        ("Write a message", "輸入聊天訊息"),
+        ("Prompt", "提示"),
+        ("Please wait for confirmation of UAC...", "請等待對方確認 UAC..."),
+        ("elevated_foreground_window_tip", "目前遠端桌面的視窗需要更高的權限才能繼續操作，您暫時無法使用滑鼠和鍵盤，您可以請求對方最小化目前視窗，或者在連線管理視窗點選提升權限。為了避免這個問題，建議在遠端裝置上安裝本軟體。"),
+        ("Disconnected", "斷開連線"),
+        ("Other", "其他"),
+        ("Confirm before closing multiple tabs", "關閉多個分頁前詢問我"),
+        ("Keyboard Settings", "鍵盤設定"),
+        ("Full Access", "完全存取"),
+        ("Screen Share", "僅分享螢幕畫面"),
+        ("Wayland requires Ubuntu 21.04 or higher version.", "Wayland 需要 Ubuntu 21.04 或更新的版本。"),
+        ("Wayland requires higher version of linux distro. Please try X11 desktop or change your OS.", "Wayland 需要更新版的 Linux 發行版。請嘗試使用 X11 桌面或更改您的作業系統。"),
+        ("JumpLink", "查看"),
+        ("Please Select the screen to be shared(Operate on the peer side).", "請選擇要分享的螢幕畫面（在對方的裝置上操作）。"),
+        ("Show RustDesk", "顯示 RustDesk"),
+        ("This PC", "此電腦"),
+        ("or", "或"),
+        ("Continue with", "繼續"),
+        ("Elevate", "提升權限"),
+        ("Zoom cursor", "縮放游標"),
+        ("Accept sessions via password", "只允許透過輸入密碼進行連線"),
+        ("Accept sessions via click", "只允許透過點選接受進行連線"),
+        ("Accept sessions via both", "允許輸入密碼或點選接受進行連線"),
+        ("Please wait for the remote side to accept your session request...", "請等待對方接受您的連線請求..."),
+        ("One-time Password", "一次性密碼"),
+        ("Use one-time password", "使用一次性密碼"),
+        ("One-time password length", "一次性密碼長度"),
+        ("Request access to your device", "請求存取您的裝置"),
+        ("Hide connection management window", "隱藏連線管理視窗"),
+        ("hide_cm_tip", "只在允許密碼連線且使用固定密碼的情況下才隱藏"),
+        ("wayland_experiment_tip", "目前對於 Wayland 的支援處於實驗階段，如果您需要使用無人值守存取，請使用 X11。"),
+        ("Right click to select tabs", "右鍵選擇分頁"),
+        ("Skipped", "已跳過"),
+        ("Add to address book", "新增到通訊錄"),
+        ("Group", "群組"),
+        ("Search", "搜尋"),
+        ("Closed manually by web console", "被 Web 控制台手動關閉"),
+        ("Local keyboard type", "本機鍵盤類型"),
+        ("Select local keyboard type", "請選擇本機鍵盤類型"),
+        ("software_render_tip", "如果您使用 Nvidia 顯示卡，並且遠端視窗在建立連線後會立刻關閉，那麼請安裝 nouveau 顯示卡驅動程式並且選擇使用軟體繪製可能會有幫助。重新啟動軟體後生效。"),
+        ("Always use software rendering", "使用軟體繪製"),
+        ("config_input", "為了能夠透過鍵盤控制遠端桌面，請給予 RustDesk「輸入監控」權限。"),
+        ("config_microphone", "為了支援透過麥克風進行音訊傳輸，請給予 RustDesk「錄音」權限。"),
+        ("request_elevation_tip", "如果遠端使用者可以操作電腦，您可以請求提升權限。"),
+        ("Wait", "等待"),
+        ("Elevation Error", "權限提升失敗"),
+        ("Ask the remote user for authentication", "請求遠端使用者進行驗證"),
+        ("Choose this if the remote account is administrator", "當遠端使用者帳戶是管理員時，請選擇此選項"),
+        ("Transmit the username and password of administrator", "傳送管理員的使用者名稱和密碼"),
+        ("still_click_uac_tip", "依然需要遠端使用者在執行 RustDesk 時於 UAC 視窗點選「是」。"),
+        ("Request Elevation", "請求權限提升"),
+        ("wait_accept_uac_tip", "請等待遠端使用者確認 UAC 對話框。"),
+        ("Elevate successfully", "權限提升成功"),
+        ("uppercase", "大寫字母"),
+        ("lowercase", "小寫字母"),
+        ("digit", "數字"),
+        ("special character", "特殊字元"),
+        ("length>=8", "長度大於或等於 8"),
+        ("Weak", "弱"),
+        ("Medium", "中"),
+        ("Strong", "強"),
+        ("Switch Sides", "反轉存取方向"),
+        ("Please confirm if you want to share your desktop?", "請確認是否要讓對方存取您的桌面？"),
+        ("Display", "顯示"),
+        ("Default View Style", "預設顯示方式"),
+        ("Default Scroll Style", "預設捲動方式"),
+        ("Default Image Quality", "預設影像品質"),
+        ("Default Codec", "預設編解碼器"),
+        ("Bitrate", "位元速率"),
+        ("FPS", "FPS"),
+        ("Auto", "自動"),
+        ("Other Default Options", "其他預設選項"),
+        ("Voice call", "語音通話"),
+        ("Text chat", "文字聊天"),
+        ("Stop voice call", "停止語音通話"),
+        ("relay_hint_tip", "可能無法使用直接連線，您可以嘗試中繼連線。\n另外，如果想要直接使用中繼連線，您可以在 ID 後面新增「/r」，或是如果近期的工作階段裡存在該裝置，您也可以在裝置選項裡選擇「一律透過中繼連線」。"),
+        ("Reconnect", "重新連線"),
+        ("Codec", "編解碼器"),
+        ("Resolution", "解析度"),
+        ("No transfers in progress", "沒有正在進行的傳輸"),
+        ("Set one-time password length", "設定一次性密碼的長度"),
+        ("RDP Settings", "RDP 設定"),
+        ("Sort by", "排序方式"),
+        ("New Connection", "新連線"),
+        ("Restore", "還原"),
+        ("Minimize", "最小化"),
+        ("Maximize", "最大化"),
+        ("Your Device", "您的裝置"),
+        ("empty_recent_tip", "哎呀，沒有近期的工作階段！\n是時候安排點新工作了。"),
+        ("empty_favorite_tip", "空空如也"),
+        ("empty_lan_tip", "喔不，看來我們目前找不到任何夥伴。"),
+        ("empty_address_book_tip", "老天，看來您的通訊錄中沒有任何夥伴。"),
+        ("Empty Username", "空使用者帳號"),
+        ("Empty Password", "空密碼"),
+        ("Me", "我"),
+        ("identical_file_tip", "此檔案與對方的檔案一致。"),
+        ("show_monitors_tip", "在工具列中顯示顯示器"),
+        ("View Mode", "瀏覽模式"),
+        ("login_linux_tip", "需要登入到遠端 Linux 使用者帳戶才能啟用 X 桌面環境"),
+        ("verify_rustdesk_password_tip", "驗證 RustDesk 密碼"),
+        ("remember_account_tip", "記住此使用者帳戶"),
+        ("os_account_desk_tip", "此使用者帳戶將用於登入遠端作業系統並啟用無頭模式 (headless mode) 的桌面連線"),
+        ("OS Account", "作業系統使用者帳戶"),
+        ("another_user_login_title_tip", "另一個使用者已經登入"),
+        ("another_user_login_text_tip", "斷開連線"),
+        ("xorg_not_found_title_tip", "找不到 Xorg"),
+        ("xorg_not_found_text_tip", "請安裝 Xorg"),
+        ("no_desktop_title_tip", "沒有可用的桌面環境"),
+        ("no_desktop_text_tip", "請安裝 GNOME 桌面"),
+        ("No need to elevate", "不需要提升權限"),
+        ("System Sound", "系統音效"),
+        ("Default", "預設"),
+        ("New RDP", "新的 RDP"),
+        ("Fingerprint", "指紋"),
+        ("Copy Fingerprint", "複製指紋"),
+        ("no fingerprints", "沒有指紋"),
+        ("Select a peer", "選擇夥伴"),
+        ("Select peers", "選擇夥伴"),
+        ("Plugins", "外掛程式"),
+        ("Uninstall", "解除安裝"),
+        ("Update", "更新"),
+        ("Enable", "啟用"),
+        ("Disable", "停用"),
+        ("Options", "選項"),
+        ("resolution_original_tip", "原始解析度"),
+        ("resolution_fit_local_tip", "調整成本機解析度"),
+        ("resolution_custom_tip", "自訂解析度"),
+        ("Collapse toolbar", "收回工具列"),
+        ("Accept and Elevate", "接受並提升權限"),
+        ("accept_and_elevate_btn_tooltip", "接受連線並提升 UAC 權限。"),
+        ("clipboard_wait_response_timeout_tip", "等待複製回應逾時。"),
+        ("Incoming connection", "傳入的連線"),
+        ("Outgoing connection", "發起的連線"),
+        ("Exit", "退出"),
+        ("Open", "開啟"),
+        ("logout_tip", "您確定要登出嗎？"),
+        ("Service", "服務"),
+        ("Start", "啟動"),
+        ("Stop", "停止"),
+        ("exceed_max_devices", "您的已管理裝置已超過最大數量。"),
+        ("Sync with recent sessions", "與近期工作階段同步"),
+        ("Sort tags", "排序標籤"),
+        ("Open connection in new tab", "在新分頁開啟連線"),
+        ("Move tab to new window", "移動標籤到新視窗"),
+        ("Can not be empty", "不能為空"),
+        ("Already exists", "已經存在"),
+        ("Change Password", "更改密碼"),
+        ("Refresh Password", "重新整理密碼"),
+        ("ID", "ID"),
+        ("Grid View", "網格檢視"),
+        ("List View", "清單檢視"),
+        ("Select", "選擇"),
+        ("Toggle Tags", "切換標籤"),
+        ("pull_ab_failed_tip", "通訊錄更新失敗"),
+        ("push_ab_failed_tip", "同步通訊錄至伺服器失敗"),
+        ("synced_peer_readded_tip", "最近工作階段中存在的裝置將會被重新同步到通訊錄。"),
+        ("Change Color", "更改顏色"),
+        ("Primary Color", "基本色"),
+        ("HSV Color", "HSV 色"),
+        ("Installation Successful!", "安裝成功！"),
+        ("Installation failed!", "安裝失敗！"),
+        ("Reverse mouse wheel", "滑鼠滾輪反向"),
+        ("{} sessions", "{} 個工作階段"),
+        ("scam_title", "您可能遭遇詐騙！"),
+        ("scam_text1", "如果您正在和素不相識的人通話，而對方要求您使用 RustDesk 啟用服務，請勿繼續操作並立即掛斷電話。"),
+        ("scam_text2", "他們很可能是詐騙，試圖竊取您的金錢或其他個人資料。"),
+        ("Don't show again", "下次不再顯示"),
+        ("I Agree", "同意"),
+        ("Decline", "拒絕"),
+        ("Timeout in minutes", "超時（分鐘）"),
+        ("auto_disconnect_option_tip", "自動在連入的使用者不活躍時關閉工作階段"),
+        ("Connection failed due to inactivity", "由於長時間沒有操作，已自動關閉工作階段"),
+        ("Check for software update on startup", "啟動時檢查更新"),
+        ("upgrade_rustdesk_server_pro_to_{}_tip", "請升級專業版伺服器到{}或更高版本！"),
+        ("pull_group_failed_tip", "獲取群組訊息失敗"),
+        ("Filter by intersection", "按照交集篩選"),
+        ("Remove wallpaper during incoming sessions", "在接受連入連線時移除桌布"),
+        ("Test", "測試"),
+        ("display_is_plugged_out_msg", "螢幕已被拔除，切換到第一個螢幕。"),
+        ("No displays", "沒有已連結的螢幕"),
+        ("Open in new window", "在新視窗中開啟"),
+        ("Show displays as individual windows", "在各別的視窗開啟螢幕畫面"),
+        ("Use all my displays for the remote session", "使用所有的螢幕用於遠端連線"),
+        ("selinux_tip", "SELinux 處於啟用狀態，RustDesk 可能無法作為被控端正常運作。"),
+        ("Change view", "更改檢視方式"),
+        ("Big tiles", "大磁磚"),
+        ("Small tiles", "小磁磚"),
+        ("List", "清單"),
+        ("Virtual display", "虛擬螢幕"),
+        ("Plug out all", "拔出所有"),
+        ("True color (4:4:4)", "全彩模式（4:4:4）"),
+        ("Enable blocking user input", "允許封鎖使用者輸入"),
+        ("id_input_tip", "您可以輸入 ID、IP、或網域名稱+連接埠（<網域名稱>:<連接埠>）。\n如果您要存取位於其他伺服器上的裝置，請在 ID 之後新增伺服器位址（<ID>@<伺服器位址>?key=<金鑰>）\n例如：9123456234@192.168.16.1:21117?key=5Qbwsde3unUcJBtrx9ZkvUmwFNoExHzpryHuPUdqlWM=\n要存取公共伺服器上的裝置，請輸入「<id>@public」，不需輸入金鑰。\n\n如果您想要在第一次連線時，強制使用中繼連線，請在 ID 的結尾新增「/r」，例如，「9123456234/r」。"),
+        ("privacy_mode_impl_mag_tip", "模式 1"),
+        ("privacy_mode_impl_virtual_display_tip", "模式 2"),
+        ("Enter privacy mode", "進入隱私模式"),
+        ("Exit privacy mode", "退出隱私模式"),
+        ("idd_not_support_under_win10_2004_tip", "不支援 Indirect display driver。需要 Windows 10 版本 2004 以上版本。"),
+        ("input_source_1_tip", "輸入源 1"),
+        ("input_source_2_tip", "輸入源 2"),
+        ("Swap control-command key", "交換 Control 和 Command 按鍵"),
+        ("swap-left-right-mouse", "交換滑鼠左右鍵"),
+        ("2FA code", "二步驟驗證碼"),
+        ("More", "更多"),
+        ("enable-2fa-title", "啟用二步驟驗證"),
+        ("enable-2fa-desc", "現在請您設定您的二步驟驗證程式。您可以在手機或電腦使用 Authy、Microsoft 或 Google Authenticator 等驗證器程式。\n\n用它掃描QR Code或輸入下方金鑰至您的驗證器，然後輸入顯示的驗證碼以啟用二步驟驗證。"),
+        ("wrong-2fa-code", "無法驗證此驗證碼。請確認您的驗證碼和您的本機時間設定是正確的"),
+        ("enter-2fa-title", "二步驟驗證"),
+        ("Email verification code must be 6 characters.", "電子郵件驗證碼必須是 6 個字元。"),
+        ("2FA code must be 6 digits.", "二步驟驗證碼必須是 6 位數字。"),
+        ("Multiple Windows sessions found", "發現多個 Windows 工作階段"),
+        ("Please select the session you want to connect to", "請選擇您想要連結的工作階段"),
+        ("powered_by_me", "由 RustDesk 提供支援"),
+        ("outgoing_only_desk_tip", "目前版本的軟體是自訂版本。\n您可以連線至其他裝置，但是其他裝置無法連線至您的裝置。"),
+        ("preset_password_warning", "此客製化版本附有預設密碼。任何知曉此密碼的人都能完全控制您的裝置。如果這不是您所預期的，請立即移除此軟體。"),
+        ("Security Alert", "安全警告"),
+        ("My address book", "我的通訊錄"),
+        ("Personal", "個人的"),
+        ("Owner", "擁有者"),
+        ("Set shared password", "設定共用密碼"),
+        ("Exist in", "存在於"),
+        ("Read-only", "唯讀"),
+        ("Read/Write", "讀寫"),
+        ("Full Control", "完全控制"),
+        ("share_warning_tip", "上述的欄位為共用且對其他人可見。"),
+        ("Everyone", "所有人"),
+        ("ab_web_console_tip", "開啟 Web 控制台以進行更多操作"),
+        ("allow-only-conn-window-open-tip", "只在 RustDesk 視窗開啟時允許連接"),
+        ("no_need_privacy_mode_no_physical_displays_tip", "沒有物理螢幕，沒必要使用隱私模式。"),
+        ("Follow remote cursor", "跟隨遠端游標"),
+        ("Follow remote window focus", "跟隨遠端視窗焦點"),
+        ("default_proxy_tip", "預設代理協定及通訊埠為 Socks5 和 1080"),
+        ("no_audio_input_device_tip", "未找到音訊輸入裝置"),
+        ("Incoming", "連入"),
+        ("Outgoing", "連出"),
+        ("Clear Wayland screen selection", "清除 Wayland 的螢幕選擇"),
+        ("clear_Wayland_screen_selection_tip", "清除 Wayland 的螢幕選擇後，您可以重新選擇分享的螢幕。"),
+        ("confirm_clear_Wayland_screen_selection_tip", "是否確認清除 Wayland 的分享螢幕選擇？"),
+        ("android_new_voice_call_tip", "收到新的語音通話請求。如果您接受，音訊將切換為語音通訊。"),
+        ("texture_render_tip", "使用紋理繪製，讓圖片更加順暢。如果您遭遇繪製問題，可嘗試關閉此選項。"),
+        ("Use texture rendering", "使用紋理繪製"),
+        ("Floating window", "懸浮視窗"),
+        ("floating_window_tip", "有助於保持 RustDesk 後台服務"),
+        ("Keep screen on", "保持螢幕開啟"),
+        ("Never", "從不"),
+        ("During controlled", "被控期間"),
+        ("During service is on", "服務開啟期間"),
+        ("Capture screen using DirectX", "使用 DirectX 擷取螢幕"),
+        ("Back", "返回"),
+        ("Apps", "應用程式"),
+        ("Volume up", "提高音量"),
+        ("Volume down", "降低音量"),
+        ("Power", "電源"),
+        ("Telegram bot", "Telegram 機器人"),
+        ("enable-bot-tip", "如果您啟用此功能，您可以從您的機器人接收二步驟驗證碼，亦可作為連線通知之用。"),
+        ("enable-bot-desc", "1. 開啟與 @BotFather 的對話。\n2. 傳送指令「/newbot」。您將會在完成此步驟後收到權杖 (Token)。\n3. 開始與您剛創立的機器人的對話。傳送一則以正斜線 (「/」) 開頭的訊息來啟用它，例如「/hello」。"),
+        ("cancel-2fa-confirm-tip", "確定要取消二步驟驗證嗎？"),
+        ("cancel-bot-confirm-tip", "確定要取消 Telegram 機器人嗎？"),
+        ("About RustDesk", "關於 RustDesk"),
+        ("Send clipboard keystrokes", "傳送剪貼簿按鍵"),
+        ("network_error_tip", "請檢查網路連結，然後點選重試"),
+        ("Unlock with PIN", "使用 PIN 碼解鎖設定"),
+        ("Requires at least {} characters", "不少於 {} 個字元"),
+        ("Wrong PIN", "PIN 碼錯誤"),
+        ("Set PIN", "設定 PIN 碼"),
+        ("Enable trusted devices", "啟用信任裝置"),
+        ("Manage trusted devices", "管理信任裝置"),
+        ("Platform", "平台"),
+        ("Days remaining", "剩餘天數"),
+        ("enable-trusted-devices-tip", "允許受信任的裝置跳過 2FA 驗證"),
+        ("Parent directory", "父目錄"),
+        ("Resume", "繼續"),
+        ("Invalid file name", "無效檔名"),
+        ("one-way-file-transfer-tip", "被控端啟用了單向檔案傳輸"),
+        ("Authentication Required", "需要驗證"),
+        ("Authenticate", "認證"),
+        ("web_id_input_tip", "您可以輸入同一個伺服器內的 ID，Web 客戶端不支援直接 IP 存取。\n如果您要存取位於其他伺服器上的裝置，請在 ID 之後新增伺服器位址（<ID>@<伺服器位址>?key=<金鑰>）\n例如：9123456234@192.168.16.1:21117?key=5Qbwsde3unUcJBtrx9ZkvUmwFNoExHzpryHuPUdqlWM=\n要存取公共伺服器上的裝置，請輸入「<id>@public」，不需輸入金鑰。"),
+        ("Download", "下載"),
+        ("Upload folder", "上傳資料夾"),
+        ("Upload files", "上傳檔案"),
+        ("Clipboard is synchronized", "剪貼簿已同步"),
+        ("Update client clipboard", "更新客戶端的剪貼簿"),
+        ("Untagged", "無標籤"),
+        ("new-version-of-{}-tip", "有新版本的 {} 可用"),
+        ("Accessible devices", "可存取的裝置"),
+        ("upgrade_remote_rustdesk_client_to_{}_tip", "請將遠端 RustDesk 客戶端升級到 {} 或更新版本！"),
+        ("d3d_render_tip", "當啟用 D3D 渲染時，某些機器可能會無法顯示遠端畫面。"),
+        ("Use D3D rendering", "使用 D3D 渲染"),
+        ("Printer", "印表機"),
+        ("printer-os-requirement-tip", "印表機的傳出功能需要 Windows 10 或更高版本。"),
+        ("printer-requires-installed-{}-client-tip", "為了使用遠端列印功能，請安裝 {} 到此設備。"),
+        ("printer-{}-not-installed-tip", "{} 印表機未安裝。"),
+        ("printer-{}-ready-tip", "{} 印表機已安裝，您可以使用列印功能了。"),
+        ("Install {} Printer", "安裝 {} 印表機"),
+        ("Outgoing Print Jobs", "傳出的列印任務"),
+        ("Incoming Print Jobs", "傳入的列印任務"),
+        ("Incoming Print Job", "傳入的列印任務"),
+        ("use-the-default-printer-tip", "使用預設的印表機"),
+        ("use-the-selected-printer-tip", "使用選取的印表機"),
+        ("auto-print-tip", "使用選取的印表機自動執行"),
+        ("print-incoming-job-confirm-tip", "您收到一個遠端列印任務，您想在本地執行它嗎？"),
+        ("remote-printing-disallowed-tile-tip", "不允許遠端列印"),
+        ("remote-printing-disallowed-text-tip", "被控端的權限設置拒絕了遠端列印。"),
+        ("save-settings-tip", "儲存設定"),
+        ("dont-show-again-tip", "不再顯示此訊息"),
+        ("Take screenshot", "擷取畫面"),
+        ("Taking screenshot", "正在擷取畫面"),
+        ("screenshot-merged-screen-not-supported-tip", "目前不支援合併多個螢幕的截圖。請切換至單一螢幕後再試。"),
+        ("screenshot-action-tip", "請選擇要如何處理這張截圖。"),
+        ("Save as", "另存為"),
+        ("Copy to clipboard", "複製到剪貼簿"),
+        ("Enable remote printer", "啟用遠端列印"),
+        ("Downloading {}", "正在下載 {} 並安裝新版本。"),
+        ("{} Update", "{} 更新"),
+        ("{}-to-update-tip", "即將關閉 {} 並安裝新版本。"),
+        ("download-new-version-failed-tip", "下載失敗，您可以重試或點擊\"下載\"按鈕以從發布網址下載，並手動升級。"),
+        ("Auto update", "自動更新"),
+        ("update-failed-check-msi-tip", "安裝方式偵測失敗，請點擊\"下載\"按鈕以從發布網址下載，並手動升級。"),
+        ("websocket_tip", "使用 WebSocket 時，只支援使用中繼連接。"),
+        ("Use WebSocket", "使用 WebSocket"),
+        ("Trackpad speed", "觸控板速度"),
+        ("Default trackpad speed", "預設觸控板速度"),
+        ("Numeric one-time password", "數字一次性密碼"),
+        ("Enable IPv6 P2P connection", "啟用 IPv6 P2P 連線"),
+        ("Enable UDP hole punching", "啟用 UDP 打洞"),
+        ("View camera", "檢視相機"),
+        ("Enable camera", "允許查看鏡頭"),
+        ("No cameras", "沒有鏡頭"),
+        ("view_camera_unsupported_tip", "您的遠端設備不支援查看鏡頭"),
+        ("Terminal", "終端機"),
+        ("Enable terminal", "啟用終端機"),
+        ("New tab", "新分頁"),
+        ("Keep terminal sessions on disconnect", "在斷線時保持終端機的工作階段"),
+        ("Terminal (Run as administrator)", "終端機（使用系統管理員執行）"),
+        ("terminal-admin-login-tip", "請輸入被控端系統管理員的使用者名稱與密碼"),
+        ("Failed to get user token.", "取得使用者權杖失敗"),
+        ("Incorrect username or password.", "使用者名稱或密碼不正確"),
+        ("The user is not an administrator.", "使用者並不是系統管理員"),
+        ("Failed to check if the user is an administrator.", "檢查使用者是否是系統管理員時失敗了"),
+        ("Supported only in the installed version.", "僅支援於已安裝的版本"),
+        ("elevation_username_tip", "輸入使用者名稱或網域\\使用者名稱"),
+        ("Preparing for installation ...", "正在準備安裝..."),
+        ("Show my cursor", "顯示我的游標"),
+        ("Scale custom", "自訂縮放"),
+        ("Custom scale slider", "自訂縮放滑桿"),
+        ("Decrease", "縮小"),
+        ("Increase", "放大"),
+        ("Show virtual mouse", "顯示虛擬滑鼠"),
+        ("Virtual mouse size", "虛擬滑鼠大小"),
+        ("Small", "小"),
+        ("Large", "大"),
+        ("Show virtual joystick", "顯示虛擬搖桿"),
+        ("Edit note", "編輯備註"),
+        ("Alias", "別名"),
+        ("ScrollEdge", "邊緣滾動"),
+        ("Allow insecure TLS fallback", "允許降級到不安全的 TLS 連接"),
+        ("allow-insecure-tls-fallback-tip", "預設情況下，對於使用 TLS 的協定，RustDesk 會驗證伺服器的憑證。\n啟用此選項後，在驗證失敗時，RustDesk 將轉為跳過驗證步驟並繼續連接。"),
+        ("Disable UDP", "停用 UDP"),
+        ("disable-udp-tip", "控制是否僅使用 TCP。\n啟用此選項後，RustDesk 將不再使用 UDP 21116，而是使用 TCP 21116。"),
+        ("server-oss-not-support-tip", "注意：RustDesk 開源伺服器 (OSS server) 不包含此功能。"),
+        ("input note here", "輸入備註"),
+        ("note-at-conn-end-tip", "在連接結束時請求備註"),
+        ("Show terminal extra keys", ""),
+        ("Relative mouse mode", ""),
+        ("rel-mouse-not-supported-peer-tip", ""),
+        ("rel-mouse-not-ready-tip", ""),
+        ("rel-mouse-lock-failed-tip", ""),
+        ("rel-mouse-exit-{}-tip", ""),
+        ("rel-mouse-permission-lost-tip", ""),
+        ("Changelog", ""),
+        ("keep-awake-during-outgoing-sessions-label", ""),
+        ("keep-awake-during-incoming-sessions-label", ""),
+    ].iter().cloned().collect();
 }

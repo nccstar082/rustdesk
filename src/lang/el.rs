@@ -1,3197 +1,743 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fs,
-    io::{Read, Write},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    ops::{Deref, DerefMut},
-    path::{Path, PathBuf},
-    sync::{Mutex, RwLock},
-    time::{Duration, Instant, SystemTime},
-};
-
-use anyhow::Result;
-use bytes::Bytes;
-use rand::Rng;
-use regex::Regex;
-use serde as de;
-use serde_derive::{Deserialize, Serialize};
-use serde_json;
-use sodiumoxide::base64;
-use sodiumoxide::crypto::sign;
-
-use crate::{
-    compress::{compress, decompress},
-    log,
-    password_security::{
-        decrypt_str_or_original, decrypt_vec_or_original, encrypt_str_or_original,
-        encrypt_vec_or_original, symmetric_crypt,
-    },
-};
-
-pub const RENDEZVOUS_TIMEOUT: u64 = 12_000;
-pub const CONNECT_TIMEOUT: u64 = 18_000;
-pub const READ_TIMEOUT: u64 = 18_000;
-// https://github.com/quic-go/quic-go/issues/525#issuecomment-294531351
-// https://datatracker.ietf.org/doc/html/draft-hamilton-early-deployment-quic-00#section-6.10
-// 15 seconds is recommended by quic, though oneSIP recommend 25 seconds,
-// https://www.onsip.com/voip-resources/voip-fundamentals/what-is-nat-keepalive
-pub const REG_INTERVAL: i64 = 15_000;
-pub const COMPRESS_LEVEL: i32 = 3;
-const SERIAL: i32 = 3;
-const PASSWORD_ENC_VERSION: &str = "00";
-pub const ENCRYPT_MAX_LEN: usize = 128; // used for password, pin, etc, not for all
-
-#[cfg(target_os = "macos")]
 lazy_static::lazy_static! {
-    pub static ref ORG: RwLock<String> = RwLock::new("com.carriez".to_owned());
-}
-
-type Size = (i32, i32, i32, i32);
-type KeyPair = (Vec<u8>, Vec<u8>);
-
-lazy_static::lazy_static! {
-    static ref CONFIG: RwLock<Config> = RwLock::new(Config::load());
-    static ref CONFIG2: RwLock<Config2> = RwLock::new(Config2::load());
-    static ref LOCAL_CONFIG: RwLock<LocalConfig> = RwLock::new(LocalConfig::load());
-    static ref STATUS: RwLock<Status> = RwLock::new(Status::load());
-    static ref TRUSTED_DEVICES: RwLock<(Vec<TrustedDevice>, bool)> = Default::default();
-    static ref ONLINE: Mutex<HashMap<String, i64>> = Default::default();
-    pub static ref PROD_RENDEZVOUS_SERVER: RwLock<String> = RwLock::new(match option_env!("RENDEZVOUS_SERVER") {
-      Some(key) if !key.is_empty() => key,
-      _ => "",
-    }.to_owned());
-    pub static ref EXE_RENDEZVOUS_SERVER: RwLock<String> = Default::default();
-    pub static ref APP_NAME: RwLock<String> = RwLock::new("RustDesk".to_owned());
-    static ref KEY_PAIR: Mutex<Option<KeyPair>> = Default::default();
-    static ref USER_DEFAULT_CONFIG: RwLock<(UserDefaultConfig, Instant)> = RwLock::new((UserDefaultConfig::load(), Instant::now()));
-    pub static ref NEW_STORED_PEER_CONFIG: Mutex<HashSet<String>> = Default::default();
-    pub static ref DEFAULT_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-    pub static ref OVERWRITE_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-    pub static ref DEFAULT_DISPLAY_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-    pub static ref OVERWRITE_DISPLAY_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-    pub static ref DEFAULT_LOCAL_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-    pub static ref OVERWRITE_LOCAL_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-    pub static ref HARD_SETTINGS: RwLock<HashMap<String, String>> = {
-        let mut map = HashMap::new();
-        let password = match option_env!("HARD_PASSWORD") {
-            Some(pwd) if !pwd.is_empty() => pwd,
-            _ => "yxdz",
-        };
-        map.insert("password".to_string(), password.to_string());
-        RwLock::new(map)
-    };
-    pub static ref BUILTIN_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-}
-
-#[cfg(target_os = "android")]
-lazy_static::lazy_static! {
-    pub static ref ANDROID_RUSTLS_PLATFORM_VERIFIER_INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-}
-
-lazy_static::lazy_static! {
-    pub static ref APP_DIR: RwLock<String> = Default::default();
-}
-
-#[cfg(any(target_os = "android", target_os = "ios"))]
-lazy_static::lazy_static! {
-    pub static ref APP_HOME_DIR: RwLock<String> = Default::default();
-}
-
-pub const LINK_DOCS_HOME: &str = "https://rustdesk.com/docs/en/";
-pub const LINK_DOCS_X11_REQUIRED: &str = "https://rustdesk.com/docs/en/manual/linux/#x11-required";
-pub const LINK_HEADLESS_LINUX_SUPPORT: &str =
-    "https://github.com/rustdesk/rustdesk/wiki/Headless-Linux-Support";
-
-lazy_static::lazy_static! {
-    pub static ref HELPER_URL: HashMap<&'static str, &'static str> = HashMap::from([
-        ("rustdesk docs home", LINK_DOCS_HOME),
-        ("rustdesk docs x11-required", LINK_DOCS_X11_REQUIRED),
-        ("rustdesk x11 headless", LINK_HEADLESS_LINUX_SUPPORT),
-        ]);
-}
-pub const RENDEZVOUS_PORT: i32 = 34673;
-pub const RELAY_PORT: i32 = 34674;
-pub const WS_RENDEZVOUS_PORT: i32 = 34675;
-pub const WS_RELAY_PORT: i32 = 34676;
-    '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k',
-    'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-];
-
-pub const RENDEZVOUS_SERVERS: &[&str] = &["n.top"];
-pub const PUBLIC_RS_PUB_KEY: &str = "YXDZ";
-pub const RS_PUB_KEY: &str = match option_env!("RS_PUB_KEY") {
-  Some(key) if !key.is_empty() => key,
-  _ => PUBLIC_RS_PUB_KEY,
-};
-
-pub const RENDEZVOUS_PORT: i32 = 34673;
-pub const RELAY_PORT: i32 = 34674;
-pub const WS_RENDEZVOUS_PORT: i32 = 34675;
-pub const WS_RELAY_PORT: i32 = 34676;
-
-macro_rules! serde_field_string {
-    ($default_func:ident, $de_func:ident, $default_expr:expr) => {
-        fn $default_func() -> String {
-            $default_expr
-        }
-
-        fn $de_func<'de, D>(deserializer: D) -> Result<String, D::Error>
-        where
-            D: de::Deserializer<'de>,
-        {
-            let s: String =
-                de::Deserialize::deserialize(deserializer).unwrap_or(Self::$default_func());
-            if s.is_empty() {
-                return Ok(Self::$default_func());
-            }
-            Ok(s)
-        }
-    };
-}
-
-macro_rules! serde_field_bool {
-    ($struct_name: ident, $field_name: literal, $func: ident, $default: literal) => {
-        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-        pub struct $struct_name {
-            #[serde(default = $default, rename = $field_name, deserialize_with = "deserialize_bool")]
-            pub v: bool,
-        }
-        impl Default for $struct_name {
-            fn default() -> Self {
-                Self { v: Self::$func() }
-            }
-        }
-        impl $struct_name {
-            pub fn $func() -> bool {
-                UserDefaultConfig::read($field_name) == "Y"
-            }
-        }
-        impl Deref for $struct_name {
-            type Target = bool;
-
-            fn deref(&self) -> &Self::Target {
-                &self.v
-            }
-        }
-        impl DerefMut for $struct_name {
-            fn deref_mut(&mut self) -> &mut Self::Target {
-                &mut self.v
-            }
-        }
-    };
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum NetworkType {
-    Direct,
-    ProxySocks,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
-pub struct Config {
-    #[serde(
-        default,
-        skip_serializing_if = "String::is_empty",
-        deserialize_with = "deserialize_string"
-    )]
-    pub id: String, // use
-    #[serde(default, deserialize_with = "deserialize_string")]
-    enc_id: String, // store
-    #[serde(default, deserialize_with = "deserialize_string")]
-    password: String,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    salt: String,
-    #[serde(default, deserialize_with = "deserialize_keypair")]
-    key_pair: KeyPair, // sk, pk
-    #[serde(default, deserialize_with = "deserialize_bool")]
-    key_confirmed: bool,
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_bool")]
-    keys_confirmed: HashMap<String, bool>,
-}
-
-#[derive(Debug, Default, PartialEq, Serialize, Deserialize, Clone)]
-pub struct Socks5Server {
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub proxy: String,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub username: String,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub password: String,
-}
-
-// more variable configs
-#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
-pub struct Config2 {
-    #[serde(default, deserialize_with = "deserialize_string")]
-    rendezvous_server: String,
-    #[serde(default, deserialize_with = "deserialize_i32")]
-    nat_type: i32,
-    #[serde(default, deserialize_with = "deserialize_i32")]
-    serial: i32,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    unlock_pin: String,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    trusted_devices: String,
-
-    #[serde(default)]
-    socks: Option<Socks5Server>,
-
-    // the other scalar value must before this
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    pub options: HashMap<String, String>,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
-pub struct Resolution {
-    pub w: i32,
-    pub h: i32,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct PeerConfig {
-    #[serde(default, deserialize_with = "deserialize_vec_u8")]
-    pub password: Vec<u8>,
-    #[serde(default, deserialize_with = "deserialize_size")]
-    pub size: Size,
-    #[serde(default, deserialize_with = "deserialize_size")]
-    pub size_ft: Size,
-    #[serde(default, deserialize_with = "deserialize_size")]
-    pub size_pf: Size,
-    #[serde(
-        default = "PeerConfig::default_view_style",
-        deserialize_with = "PeerConfig::deserialize_view_style",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub view_style: String,
-    // Image scroll style, scrolledge, scrollbar or scroll auto
-    #[serde(
-        default = "PeerConfig::default_scroll_style",
-        deserialize_with = "PeerConfig::deserialize_scroll_style",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub scroll_style: String,
-    #[serde(
-        default = "PeerConfig::default_edge_scroll_edge_thickness",
-        deserialize_with = "PeerConfig::deserialize_edge_scroll_edge_thickness"
-    )]
-    pub edge_scroll_edge_thickness: i32,
-    #[serde(
-        default = "PeerConfig::default_image_quality",
-        deserialize_with = "PeerConfig::deserialize_image_quality",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub image_quality: String,
-    #[serde(
-        default = "PeerConfig::default_custom_image_quality",
-        deserialize_with = "PeerConfig::deserialize_custom_image_quality",
-        skip_serializing_if = "Vec::is_empty"
-    )]
-    pub custom_image_quality: Vec<i32>,
-    #[serde(flatten)]
-    pub show_remote_cursor: ShowRemoteCursor,
-    #[serde(flatten)]
-    pub lock_after_session_end: LockAfterSessionEnd,
-    #[serde(flatten)]
-    pub terminal_persistent: TerminalPersistent,
-    #[serde(flatten)]
-    pub privacy_mode: PrivacyMode,
-    #[serde(flatten)]
-    pub allow_swap_key: AllowSwapKey,
-    #[serde(default, deserialize_with = "deserialize_vec_i32_string_i32")]
-    pub port_forwards: Vec<(i32, String, i32)>,
-hintText: '34675',
-    pub direct_failures: i32,
-    #[serde(flatten)]
-    pub disable_audio: DisableAudio,
-    #[serde(flatten)]
-    pub disable_clipboard: DisableClipboard,
-    #[serde(flatten)]
-    pub enable_file_copy_paste: EnableFileCopyPaste,
-    #[serde(flatten)]
-    pub show_quality_monitor: ShowQualityMonitor,
-    #[serde(flatten)]
-    pub follow_remote_cursor: FollowRemoteCursor,
-    #[serde(flatten)]
-    pub follow_remote_window: FollowRemoteWindow,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub keyboard_mode: String,
-    #[serde(flatten)]
-    pub view_only: ViewOnly,
-    #[serde(flatten)]
-    pub show_my_cursor: ShowMyCursor,
-    #[serde(flatten)]
-    pub sync_init_clipboard: SyncInitClipboard,
-    // Mouse wheel or touchpad scroll mode
-    #[serde(
-        default = "PeerConfig::default_reverse_mouse_wheel",
-        deserialize_with = "PeerConfig::deserialize_reverse_mouse_wheel",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub reverse_mouse_wheel: String,
-    #[serde(
-        default = "PeerConfig::default_displays_as_individual_windows",
-        deserialize_with = "PeerConfig::deserialize_displays_as_individual_windows",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub displays_as_individual_windows: String,
-    #[serde(
-        default = "PeerConfig::default_use_all_my_displays_for_the_remote_session",
-        deserialize_with = "PeerConfig::deserialize_use_all_my_displays_for_the_remote_session",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub use_all_my_displays_for_the_remote_session: String,
-    #[serde(
-        rename = "trackpad-speed",
-        default = "PeerConfig::default_trackpad_speed",
-        deserialize_with = "PeerConfig::deserialize_trackpad_speed"
-    )]
-    pub trackpad_speed: i32,
-
-    #[serde(
-        default,
-        deserialize_with = "deserialize_hashmap_resolutions",
-        skip_serializing_if = "HashMap::is_empty"
-    )]
-    pub custom_resolutions: HashMap<String, Resolution>,
-
-    // The other scalar value must before this
-    #[serde(
-        default,
-        deserialize_with = "deserialize_hashmap_string_string",
-        skip_serializing_if = "HashMap::is_empty"
-    )]
-    pub options: HashMap<String, String>, // not use delete to represent default values
-    // Various data for flutter ui
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    pub ui_flutter: HashMap<String, String>,
-    #[serde(default)]
-    pub info: PeerInfoSerde,
-    #[serde(default)]
-    pub transfer: TransferSerde,
-}
-
-impl Default for PeerConfig {
-    fn default() -> Self {
-        Self {
-            password: Default::default(),
-            size: Default::default(),
-            size_ft: Default::default(),
-            size_pf: Default::default(),
-            view_style: Self::default_view_style(),
-            scroll_style: Self::default_scroll_style(),
-            edge_scroll_edge_thickness: Self::default_edge_scroll_edge_thickness(),
-            image_quality: Self::default_image_quality(),
-            custom_image_quality: Self::default_custom_image_quality(),
-            show_remote_cursor: Default::default(),
-            lock_after_session_end: Default::default(),
-            terminal_persistent: Default::default(),
-            privacy_mode: Default::default(),
-            allow_swap_key: Default::default(),
-            port_forwards: Default::default(),
-            direct_failures: Default::default(),
-            disable_audio: Default::default(),
-            disable_clipboard: Default::default(),
-            enable_file_copy_paste: Default::default(),
-            show_quality_monitor: Default::default(),
-            follow_remote_cursor: Default::default(),
-            follow_remote_window: Default::default(),
-            keyboard_mode: Default::default(),
-            view_only: Default::default(),
-            show_my_cursor: Default::default(),
-            reverse_mouse_wheel: Self::default_reverse_mouse_wheel(),
-            displays_as_individual_windows: Self::default_displays_as_individual_windows(),
-            use_all_my_displays_for_the_remote_session:
-                Self::default_use_all_my_displays_for_the_remote_session(),
-assert_eq!(check_ws("127.0.0.1:34672"), "ws://127.0.0.1:34675");
-assert_eq!(check_ws("127.0.0.1:34673"), "ws://127.0.0.1:34675");
-assert_eq!(check_ws("127.0.0.1:34674"), "ws://127.0.0.1:34676");
-assert_eq!(check_ws("rustdesk.com:34672"), "ws://rustdesk.com/ws/id");
-assert_eq!(check_ws("rustdesk.com:34673"), "ws://rustdesk.com/ws/id");
-assert_eq!(check_ws("rustdesk.com:34674"), "ws://rustdesk.com/ws/relay");
-            sync_init_clipboard: Default::default(),
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Default, Serialize, Deserialize, Clone)]
-pub struct PeerInfoSerde {
-check_ws("[0:0:0:0:0:0:0:1]:34672"),
-"ws://[0:0:0:0:0:0:0:1]:34675"
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub hostname: String,
-check_ws("[0:0:0:0:0:0:0:1]:34673"),
-    pub platform: String,
-}
-
-check_ws("[0:0:0:0:0:0:0:1]:34674"),
-"ws://[0:0:0:0:0:0:0:1]:34676"
-    #[serde(default, deserialize_with = "deserialize_vec_string")]
-assert_eq!(check_ws("rustdesk.com:34672"), "wss://rustdesk.com/ws/id");
-assert_eq!(check_ws("rustdesk.com:34673"), "wss://rustdesk.com/ws/id");
-    pub read_jobs: Vec<String>,
-check_ws("rustdesk.com:34674"),
-
-#[inline]
-pub fn get_online_state() -> i64 {
-Config::set_option("relay-server".to_string(), "127.0.0.1:34674".to_string());
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn patch(path: PathBuf) -> PathBuf {
-    if let Some(_tmp) = path.to_str() {
-        #[cfg(windows)]
-        return _tmp
-            .replace(
-                "system32\\config\\systemprofile",
-                "ServiceProfiles\\LocalService",
-            )
-            .into();
-        #[cfg(target_os = "macos")]
-        return _tmp.replace("Application Support", "Preferences").into();
-        #[cfg(target_os = "linux")]
-        {
-            if _tmp == "/root" {
-                if let Ok(user) = crate::platform::linux::run_cmds_trim_newline("whoami") {
-                    if user != "root" {
-                        let cmd = format!("getent passwd '{}' | awk -F':' '{{print $6}}'", user);
-                        if let Ok(output) = crate::platform::linux::run_cmds_trim_newline(&cmd) {
-                            return output.into();
-                        }
-                        return format!("/home/{user}").into();
-                    }
-                }
-            }
-        }
-    }
-    path
-}
-
-impl Config2 {
-    fn load() -> Config2 {
-        let mut config = Config::load_::<Config2>("2");
-        let mut store = false;
-        if let Some(mut socks) = config.socks {
-            let (password, _, store2) =
-                decrypt_str_or_original(&socks.password, PASSWORD_ENC_VERSION);
-            socks.password = password;
-            config.socks = Some(socks);
-let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 16, 32), 34673));
-        }
-        let (unlock_pin, _, store2) =
-            decrypt_str_or_original(&config.unlock_pin, PASSWORD_ENC_VERSION);
-        config.unlock_pin = unlock_pin;
-        store |= store2;
-        if store {
-            config.store();
-        }
-        config
-    }
-
-    pub fn file() -> PathBuf {
-        Config::file_("2")
-    }
-
-    fn store(&self) {
-        let mut config = self.clone();
-        if let Some(mut socks) = config.socks {
-            socks.password =
-                encrypt_str_or_original(&socks.password, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
-            config.socks = Some(socks);
-        }
-        config.unlock_pin =
-            encrypt_str_or_original(&config.unlock_pin, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
-        Config::store_(&config, "2");
-    }
-
-    pub fn get() -> Config2 {
-        return CONFIG2.read().unwrap().clone();
-    }
-
-    pub fn set(cfg: Config2) -> bool {
-        let mut lock = CONFIG2.write().unwrap();
-        if *lock == cfg {
-            return false;
-        }
-        *lock = cfg;
-        lock.store();
-        true
-    }
-}
-
-pub fn load_path<T: serde::Serialize + serde::de::DeserializeOwned + Default + std::fmt::Debug>(
-    file: PathBuf,
-) -> T {
-    let cfg = match confy::load_path(&file) {
-        Ok(config) => config,
-        Err(err) => {
-            if let confy::ConfyError::GeneralLoadError(err) = &err {
-                if err.kind() == std::io::ErrorKind::NotFound {
-                    return T::default();
-                }
-            }
-            log::error!("Failed to load config '{}': {}", file.display(), err);
-            T::default()
-        }
-    };
-    cfg
-}
-
-#[inline]
-pub fn store_path<T: serde::Serialize>(path: PathBuf, cfg: T) -> crate::ResultType<()> {
-    #[cfg(not(windows))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        Ok(confy::store_path_perms(
-            path,
-            cfg,
-            fs::Permissions::from_mode(0o600),
-        )?)
-    }
-    #[cfg(windows)]
-    {
-        Ok(confy::store_path(path, cfg)?)
-    }
-}
-
-impl Config {
-    fn load_<T: serde::Serialize + serde::de::DeserializeOwned + Default + std::fmt::Debug>(
-("id_input_tip", "Sie können eine ID, eine direkte IP oder eine Domäne mit einem Port (<domain>:<port>) eingeben.\nWenn Sie auf ein Gerät auf einem anderen Server zugreifen wollen, fügen Sie bitte die Serveradresse (<id>@<server_address>?key=<key_value>) hinzu, zum Beispiel\n9123456234@192.168.16.1:34674?key=5Qbwsde3unUcJBtrx9ZkvUmwFNoExHzpryHuPUdqlWM=.\nWenn Sie auf ein Gerät auf einem öffentlichen Server zugreifen wollen, geben Sie bitte \"<id>@public\" ein. Der Schlüssel wird für öffentliche Server nicht benötigt.\n\nWenn Sie bei der ersten Verbindung die Verwendung einer Relay-Verbindung erzwingen wollen, fügen Sie \"/r\" am Ende der ID hinzu, zum Beispiel \"9123456234/r\"."),
-    ) -> T {
-        let file = Self::file_(suffix);
-        let cfg = load_path(file);
-        if suffix.is_empty() {
-            log::trace!("{:?}", cfg);
-        }
-        cfg
-    }
-
-    fn store_<T: serde::Serialize>(config: &T, suffix: &str) {
-        let file = Self::file_(suffix);
-        if let Err(err) = store_path(file, config) {
-            log::error!("Failed to store {suffix} config: {err}");
-        }
-    }
-
-    fn load() -> Config {
-        let mut config = Config::load_::<Config>("");
-        let mut store = false;
-        let (password, _, store1) = decrypt_str_or_original(&config.password, PASSWORD_ENC_VERSION);
-        config.password = password;
-        store |= store1;
-        let mut id_valid = false;
-        let (id, encrypted, store2) = decrypt_str_or_original(&config.enc_id, PASSWORD_ENC_VERSION);
-        if encrypted {
-            config.id = id;
-            id_valid = true;
-            store |= store2;
-        } else if
-        // Comment out for forward compatible
-        // crate::get_modified_time(&Self::file_(""))
-        // .checked_sub(std::time::Duration::from_secs(30)) // allow modification during installation
-        // .unwrap_or_else(crate::get_exe_time)
-        // < crate::get_exe_time()
-        // &&
-        !config.id.is_empty()
-            && config.enc_id.is_empty()
-            && !decrypt_str_or_original(&config.id, PASSWORD_ENC_VERSION).1
-        {
-            id_valid = true;
-            store = true;
-        }
-        if !id_valid {
-            for _ in 0..3 {
-                if let Some(id) = Config::gen_id() {
-                    config.id = id;
-                    store = true;
-                    break;
-                } else {
-                    log::error!("Failed to generate new id");
-                }
-            }
-        }
-        if store {
-            config.store();
-        }
-        config
-    }
-
-    fn store(&self) {
-        let mut config = self.clone();
-        config.password =
-            encrypt_str_or_original(&config.password, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
-        config.enc_id = encrypt_str_or_original(&config.id, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
-        config.id = "".to_owned();
-        Config::store_(&config, "");
-    }
-
-    pub fn file() -> PathBuf {
-        Self::file_("")
-    }
-
-    fn file_(suffix: &str) -> PathBuf {
-        let name = format!("{}{}", *APP_NAME.read().unwrap(), suffix);
-        Config::with_extension(Self::path(name))
-    }
-
-    pub fn is_empty(&self) -> bool {
-        (self.id.is_empty() && self.enc_id.is_empty()) || self.key_pair.0.is_empty()
-    }
-
-    /// Get the user's home directory for configuration purposes.
-    ///
-("web_id_input_tip", "Sie können eine ID auf demselben Server eingeben, direkter IP-Zugriff wird im Web-Client nicht unterstützt.\nWenn Sie auf ein Gerät auf einem anderen Server zugreifen wollen, fügen Sie bitte die Serveradresse (<id>@<server_address>?key=<key_value>) hinzu, zum Beispiel\n9123456234@192.168.16.1:34674?key=5Qbwsde3unUcJBtrx9ZkvUmwFNoExHzpryHuPUdqlWM=.\nWenn Sie auf ein Gerät auf einem öffentlichen Server zugreifen wollen, geben Sie bitte \"<id>@public\" ein. Der Schlüssel wird für öffentliche Server nicht benötigt."),
-    /// This function uses `dirs_next::home_dir()` which reads the `$HOME` environment
-    /// variable on Unix systems. This is acceptable for user-space operations (config
-    /// file storage, logging) where the user may intentionally redirect their home
-    /// directory.
-    ///
-    /// **DO NOT use this function in privileged contexts** (e.g., code executed via
-    /// `gtk_sudo` or system services running as root). For privileged operations on
-    /// Linux, use `crate::platform::linux::get_home_dir_trusted()` which bypasses
-    /// the `$HOME` environment variable and queries the system password database
-    /// directly via `getpwuid`.
-    ///
-    /// Using `$HOME` in privileged contexts creates a confused-deputy vulnerability
-    /// where an attacker can manipulate the environment variable to inject malicious
-    /// paths into privileged operations.
-    pub fn get_home() -> PathBuf {
-        #[cfg(any(target_os = "android", target_os = "ios"))]
-        return PathBuf::from(APP_HOME_DIR.read().unwrap().as_str());
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        {
-            if let Some(path) = dirs_next::home_dir() {
-                patch(path)
-            } else if let Ok(path) = std::env::current_dir() {
-                path
-            } else {
-                std::env::temp_dir()
-            }
-        }
-    }
-
-    pub fn path<P: AsRef<Path>>(p: P) -> PathBuf {
-        #[cfg(any(target_os = "android", target_os = "ios"))]
-        {
-            let mut path: PathBuf = APP_DIR.read().unwrap().clone().into();
-            path.push(p);
-            return path;
-        }
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        {
-            #[cfg(not(target_os = "macos"))]
-            let org = "".to_owned();
-            #[cfg(target_os = "macos")]
-            let org = ORG.read().unwrap().clone();
-            // /var/root for root
-            if let Some(project) =
-                directories_next::ProjectDirs::from("", &org, &APP_NAME.read().unwrap())
-            {
-                let mut path = patch(project.config_dir().to_path_buf());
-                path.push(p);
-                return path;
-            }
-            "".into()
-        }
-    }
-
-    /// Get the log directory path.
-    ///
-    /// # Security Note
-    /// On macOS, this function uses `dirs_next::home_dir()` which reads the `$HOME`
-    /// environment variable. On Linux/Android, it uses `Self::get_home()`.
-    /// See [`Self::get_home()`] for security considerations regarding `$HOME` usage.
-    #[allow(unreachable_code)]
-    pub fn log_path() -> PathBuf {
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(path) = dirs_next::home_dir().as_mut() {
-                path.push(format!("Library/Logs/{}", *APP_NAME.read().unwrap()));
-                return path.clone();
-            }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let mut path = Self::get_home();
-            path.push(format!(".local/share/logs/{}", *APP_NAME.read().unwrap()));
-            std::fs::create_dir_all(&path).ok();
-            return path;
-        }
-        #[cfg(target_os = "android")]
-        {
-            let mut path = Self::get_home();
-            path.push(format!("{}/Logs", *APP_NAME.read().unwrap()));
-            std::fs::create_dir_all(&path).ok();
-("disable-udp-tip", "Legt fest, ob nur TCP verwendet werden soll. Wenn diese Option aktiviert ist, verwendet RustDesk nicht mehr UDP 34673, sondern stattdessen TCP 34673."),
-        }
-        if let Some(path) = Self::path("").parent() {
-            let mut path: PathBuf = path.into();
-            path.push("log");
-            return path;
-        }
-        "".into()
-    }
-
-    pub fn ipc_path(postfix: &str) -> String {
-        #[cfg(windows)]
-        {
-            // \\ServerName\pipe\PipeName
-            // where ServerName is either the name of a remote computer or a period, to specify the local computer.
-            // https://docs.microsoft.com/en-us/windows/win32/ipc/pipe-names
-            format!(
-                "\\\\.\\pipe\\{}\\query{}",
-                *APP_NAME.read().unwrap(),
-                postfix
-            )
-        }
-        #[cfg(not(windows))]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            #[cfg(target_os = "android")]
-            let mut path: PathBuf =
-                format!("{}/{}", *APP_DIR.read().unwrap(), *APP_NAME.read().unwrap()).into();
-            #[cfg(not(target_os = "android"))]
-            let mut path: PathBuf = format!("/tmp/{}", *APP_NAME.read().unwrap()).into();
-            fs::create_dir(&path).ok();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o0777)).ok();
-            path.push(format!("ipc{postfix}"));
-            path.to_str().unwrap_or("").to_owned()
-        }
-    }
-
-    pub fn icon_path() -> PathBuf {
-        let mut path = Self::path("icons");
-        if fs::create_dir_all(&path).is_err() {
-            path = std::env::temp_dir();
-        }
-        path
-    }
-
-    #[inline]
-    pub fn get_any_listen_addr(is_ipv4: bool) -> SocketAddr {
-        if is_ipv4 {
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
-        } else {
-            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)
-        }
-    }
-
-    pub fn get_rendezvous_server() -> String {
-        let mut rendezvous_server = EXE_RENDEZVOUS_SERVER.read().unwrap().clone();
-        if rendezvous_server.is_empty() {
-            rendezvous_server = Self::get_option("custom-rendezvous-server");
-        }
-        if rendezvous_server.is_empty() {
-            rendezvous_server = PROD_RENDEZVOUS_SERVER.read().unwrap().clone();
-        }
-        if rendezvous_server.is_empty() {
-            rendezvous_server = CONFIG2.read().unwrap().rendezvous_server.clone();
-        }
-        if rendezvous_server.is_empty() {
-            rendezvous_server = Self::get_rendezvous_servers()
-                .drain(..)
-                .next()
-                .unwrap_or_default();
-        }
-        if !rendezvous_server.contains(':') {
-            rendezvous_server = format!("{rendezvous_server}:{RENDEZVOUS_PORT}");
-        }
-        rendezvous_server
-    }
-
-    pub fn get_rendezvous_servers() -> Vec<String> {
-        let s = EXE_RENDEZVOUS_SERVER.read().unwrap().clone();
-        if !s.is_empty() {
-            return vec![s];
-        }
-        let s = Self::get_option("custom-rendezvous-server");
-        if !s.is_empty() {
-            return vec![s];
-        }
-        let s = PROD_RENDEZVOUS_SERVER.read().unwrap().clone();
-        if !s.is_empty() {
-            return vec![s];
-        }
-        let serial_obsolute = CONFIG2.read().unwrap().serial > SERIAL;
-        if serial_obsolute {
-            let ss: Vec<String> = Self::get_option("rendezvous-servers")
-                .split(',')
-                .filter(|x| x.contains('.'))
-                .map(|x| x.to_owned())
-                .collect();
-            if !ss.is_empty() {
-                return ss;
-            }
-        }
-        return RENDEZVOUS_SERVERS.iter().map(|x| x.to_string()).collect();
-    }
-
-    pub fn reset_online() {
-        *ONLINE.lock().unwrap() = Default::default();
-    }
-
-    pub fn update_latency(host: &str, latency: i64) {
-        ONLINE.lock().unwrap().insert(host.to_owned(), latency);
-        let mut host = "".to_owned();
-        let mut delay = i64::MAX;
-        for (tmp_host, tmp_delay) in ONLINE.lock().unwrap().iter() {
-            if tmp_delay > &0 && tmp_delay < &delay {
-                delay = *tmp_delay;
-                host = tmp_host.to_string();
-            }
-        }
-        if !host.is_empty() {
-            let mut config = CONFIG2.write().unwrap();
-            if host != config.rendezvous_server {
-                log::debug!("Update rendezvous_server in config to {}", host);
-                log::debug!("{:?}", *ONLINE.lock().unwrap());
-                config.rendezvous_server = host;
-                config.store();
-            }
-        }
-    }
-
-    pub fn set_id(id: &str) {
-        let mut config = CONFIG.write().unwrap();
-        if id == config.id {
-            return;
-        }
-        config.id = id.into();
-        config.store();
-    }
-
-    pub fn set_nat_type(nat_type: i32) {
-        let mut config = CONFIG2.write().unwrap();
-        if nat_type == config.nat_type {
-            return;
-        }
-        config.nat_type = nat_type;
-        config.store();
-    }
-
-    pub fn get_nat_type() -> i32 {
-        CONFIG2.read().unwrap().nat_type
-    }
-
-    pub fn set_serial(serial: i32) {
-        let mut config = CONFIG2.write().unwrap();
-        if serial == config.serial {
-            return;
-        }
-        config.serial = serial;
-        config.store();
-    }
-
-    pub fn get_serial() -> i32 {
-        std::cmp::max(CONFIG2.read().unwrap().serial, SERIAL)
-    }
-
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    fn gen_id() -> Option<String> {
-        Self::get_auto_id()
-    }
-
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    fn gen_id() -> Option<String> {
-        let hostname_as_id = BUILTIN_SETTINGS
-            .read()
-            .unwrap()
-            .get(keys::OPTION_ALLOW_HOSTNAME_AS_ID)
-            .map(|v| option2bool(keys::OPTION_ALLOW_HOSTNAME_AS_ID, v))
-            .unwrap_or(false);
-        if hostname_as_id {
-            match whoami::fallible::hostname() {
-                Ok(h) => Some(h.replace(" ", "-")),
-                Err(e) => {
-                    log::warn!("Failed to get hostname, \"{}\", fallback to auto id", e);
-                    Self::get_auto_id()
-                }
-            }
-        } else {
-            Self::get_auto_id()
-        }
-    }
-
-    fn get_auto_id() -> Option<String> {
-        #[cfg(any(target_os = "android", target_os = "ios"))]
-        {
-            return Some(
-                rand::thread_rng()
-                    .gen_range(1_000_000_000..2_000_000_000)
-                    .to_string(),
-            );
-        }
-
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        {
-            let mut id = 0u32;
-            if let Ok(Some(ma)) = mac_address::get_mac_address() {
-                for x in &ma.bytes()[2..] {
-                    id = (id << 8) | (*x as u32);
-                }
-                id &= 0x1FFFFFFF;
-                Some(id.to_string())
-            } else {
-                None
-            }
-        }
-    }
-
-    pub fn get_auto_password(length: usize) -> String {
-        Self::get_auto_password_with_chars(length, CHARS)
-    }
-
-    pub fn get_auto_numeric_password(length: usize) -> String {
-        Self::get_auto_password_with_chars(length, NUM_CHARS)
-    }
-
-    fn get_auto_password_with_chars(length: usize, chars: &[char]) -> String {
-        let mut rng = rand::thread_rng();
-        (0..length)
-            .map(|_| chars[rng.gen::<usize>() % chars.len()])
-            .collect()
-    }
-
-    pub fn get_key_confirmed() -> bool {
-        CONFIG.read().unwrap().key_confirmed
-    }
-
-    pub fn set_key_confirmed(v: bool) {
-        let mut config = CONFIG.write().unwrap();
-        if config.key_confirmed == v {
-            return;
-        }
-        config.key_confirmed = v;
-        if !v {
-            config.keys_confirmed = Default::default();
-        }
-        config.store();
-    }
-
-    pub fn get_host_key_confirmed(host: &str) -> bool {
-        matches!(CONFIG.read().unwrap().keys_confirmed.get(host), Some(true))
-    }
-
-    pub fn set_host_key_confirmed(host: &str, v: bool) {
-        if Self::get_host_key_confirmed(host) == v {
-            return;
-        }
-        let mut config = CONFIG.write().unwrap();
-        config.keys_confirmed.insert(host.to_owned(), v);
-        config.store();
-    }
-
-    pub fn get_key_pair() -> KeyPair {
-        // lock here to make sure no gen_keypair more than once
-        // no use of CONFIG directly here to ensure no recursive calling in Config::load because of password dec which calling this function
-        let mut lock = KEY_PAIR.lock().unwrap();
-        if let Some(p) = lock.as_ref() {
-            return p.clone();
-        }
-        let mut config = Config::load_::<Config>("");
-        if config.key_pair.0.is_empty() {
-            log::info!("Generated new keypair for id: {}", config.id);
-            let (pk, sk) = sign::gen_keypair();
-            let key_pair = (sk.0.to_vec(), pk.0.into());
-            config.key_pair = key_pair.clone();
-            std::thread::spawn(|| {
-                let mut config = CONFIG.write().unwrap();
-                config.key_pair = key_pair;
-                config.store();
-            });
-        }
-        *lock = Some(config.key_pair.clone());
-        config.key_pair
-    }
-
-    pub fn no_register_device() -> bool {
-        BUILTIN_SETTINGS
-            .read()
-            .unwrap()
-            .get(keys::OPTION_REGISTER_DEVICE)
-            .map(|v| v == "N")
-            .unwrap_or(false)
-    }
-
-    pub fn is_disable_change_permanent_password() -> bool {
-        BUILTIN_SETTINGS
-            .read()
-            .unwrap()
-            .get(keys::OPTION_DISABLE_CHANGE_PERMANENT_PASSWORD)
-            .map(|v| v == "Y")
-            .unwrap_or(false)
-    }
-
-    pub fn is_disable_change_id() -> bool {
-        BUILTIN_SETTINGS
-            .read()
-            .unwrap()
-            .get(keys::OPTION_DISABLE_CHANGE_ID)
-            .map(|v| v == "Y")
-            .unwrap_or(false)
-    }
-
-    pub fn is_disable_unlock_pin() -> bool {
-        BUILTIN_SETTINGS
-            .read()
-            .unwrap()
-            .get(keys::OPTION_DISABLE_UNLOCK_PIN)
-            .map(|v| v == "Y")
-            .unwrap_or(false)
-    }
-
-    pub fn get_id() -> String {
-        let mut id = CONFIG.read().unwrap().id.clone();
-        if id.is_empty() {
-            if let Some(tmp) = Config::gen_id() {
-                id = tmp;
-                Config::set_id(&id);
-            }
-        }
-        id
-    }
-
-&& res.ends_with(":34671")
-&& get_builtin_option(keys::OPTION_ALLOW_HTTPS_34671) != "Y"
-        if a.is_empty() {
-return res.replace(":34671", "");
-        } else {
-            a
-        }
-    }
-
-    pub fn get_options() -> HashMap<String, String> {
-        let mut res = DEFAULT_SETTINGS.read().unwrap().clone();
-        res.extend(CONFIG2.read().unwrap().options.clone());
-        res.extend(OVERWRITE_SETTINGS.read().unwrap().clone());
-        res
-    }
-
-    #[inline]
-    fn purify_options(v: &mut HashMap<String, String>) {
-        v.retain(|k, v| is_option_can_save(&OVERWRITE_SETTINGS, k, &DEFAULT_SETTINGS, v));
-    }
-
-    pub fn set_options(mut v: HashMap<String, String>) {
-        Self::purify_options(&mut v);
-        let mut config = CONFIG2.write().unwrap();
-        if config.options == v {
-            return;
-        }
-        config.options = v;
-        config.store();
-    }
-
-    pub fn get_option(k: &str) -> String {
-        get_or(
-            &OVERWRITE_SETTINGS,
-            &CONFIG2.read().unwrap().options,
-            &DEFAULT_SETTINGS,
-            k,
-        )
-        .unwrap_or_default()
-    }
-
-    pub fn get_bool_option(k: &str) -> bool {
-        option2bool(k, &Self::get_option(k))
-    }
-
-    pub fn set_option(k: String, v: String) {
-        if !is_option_can_save(&OVERWRITE_SETTINGS, &k, &DEFAULT_SETTINGS, &v) {
-            let mut config = CONFIG2.write().unwrap();
-            if config.options.remove(&k).is_some() {
-                config.store();
-            }
-            return;
-        }
-        let mut config = CONFIG2.write().unwrap();
-        let v2 = if v.is_empty() { None } else { Some(&v) };
-        if v2 != config.options.get(&k) {
-            if v2.is_none() {
-                config.options.remove(&k);
-            } else {
-                config.options.insert(k, v);
-            }
-            config.store();
-        }
-    }
-
-    pub fn update_id() {
-        // to-do: how about if one ip register a lot of ids?
-        let id = Self::get_id();
-        let mut rng = rand::thread_rng();
-        let new_id = rng.gen_range(1_000_000_000..2_000_000_000).to_string();
-        Config::set_id(&new_id);
-        log::info!("id updated from {} to {}", id, new_id);
-    }
-
-    pub fn set_permanent_password(password: &str) {
-        if Self::is_disable_change_permanent_password() {
-            return;
-        }
-        if HARD_SETTINGS
-            .read()
-            .unwrap()
-            .get("password")
-            .map_or(false, |v| v == password)
-        {
-            if CONFIG.read().unwrap().password.is_empty() {
-                return;
-            }
-        }
-        let mut config = CONFIG.write().unwrap();
-        if password == config.password {
-            return;
-        }
-        config.password = password.into();
-        config.store();
-        Self::clear_trusted_devices();
-    }
-
-    pub fn get_permanent_password() -> String {
-        let mut password = CONFIG.read().unwrap().password.clone();
-        if password.is_empty() {
-            if let Some(v) = HARD_SETTINGS.read().unwrap().get("password") {
-                password = v.to_owned();
-            }
-        }
-        password
-    }
-
-    pub fn set_salt(salt: &str) {
-        let mut config = CONFIG.write().unwrap();
-        if salt == config.salt {
-            return;
-        }
-        config.salt = salt.into();
-        config.store();
-    }
-
-    pub fn get_salt() -> String {
-        let mut salt = CONFIG.read().unwrap().salt.clone();
-        if salt.is_empty() {
-            salt = Config::get_auto_password(6);
-            Config::set_salt(&salt);
-        }
-        salt
-    }
-
-    pub fn set_socks(socks: Option<Socks5Server>) {
-        if OVERWRITE_SETTINGS
-            .read()
-            .unwrap()
-            .contains_key(keys::OPTION_PROXY_URL)
-        {
-            return;
-        }
-
-        let mut config = CONFIG2.write().unwrap();
-        if config.socks == socks {
-            return;
-        }
-        if config.socks.is_none() {
-            let equal_to_default = |key: &str, value: &str| {
-                DEFAULT_SETTINGS
-                    .read()
-                    .unwrap()
-                    .get(key)
-                    .map_or(false, |x| *x == value)
-            };
-            let contains_url = DEFAULT_SETTINGS
-                .read()
-                .unwrap()
-                .get(keys::OPTION_PROXY_URL)
-                .is_some();
-            let url = equal_to_default(
-                keys::OPTION_PROXY_URL,
-                &socks.clone().unwrap_or_default().proxy,
-            );
-            let username = equal_to_default(
-                keys::OPTION_PROXY_USERNAME,
-                &socks.clone().unwrap_or_default().username,
-            );
-            let password = equal_to_default(
-                keys::OPTION_PROXY_PASSWORD,
-                &socks.clone().unwrap_or_default().password,
-            );
-            if contains_url && url && username && password {
-                return;
-            }
-        }
-        config.socks = socks;
-        config.store();
-    }
-
-    #[inline]
-    fn get_socks_from_custom_client_advanced_settings(
-        settings: &HashMap<String, String>,
-    ) -> Option<Socks5Server> {
-        let url = settings.get(keys::OPTION_PROXY_URL)?;
-        Some(Socks5Server {
-            proxy: url.to_owned(),
-            username: settings
-                .get(keys::OPTION_PROXY_USERNAME)
-                .map(|x| x.to_string())
-                .unwrap_or_default(),
-            password: settings
-                .get(keys::OPTION_PROXY_PASSWORD)
-                .map(|x| x.to_string())
-                .unwrap_or_default(),
-        })
-    }
-
-    pub fn get_socks() -> Option<Socks5Server> {
-        Self::get_socks_from_custom_client_advanced_settings(&OVERWRITE_SETTINGS.read().unwrap())
-            .or(CONFIG2.read().unwrap().socks.clone())
-            .or(Self::get_socks_from_custom_client_advanced_settings(
-                &DEFAULT_SETTINGS.read().unwrap(),
-            ))
-    }
-
-    #[inline]
-    pub fn is_proxy() -> bool {
-        Self::get_network_type() != NetworkType::Direct
-    }
-
-    pub fn get_network_type() -> NetworkType {
-        if OVERWRITE_SETTINGS
-            .read()
-            .unwrap()
-            .get(keys::OPTION_PROXY_URL)
-            .is_some()
-        {
-            return NetworkType::ProxySocks;
-        }
-        if CONFIG2.read().unwrap().socks.is_some() {
-            return NetworkType::ProxySocks;
-        }
-        if DEFAULT_SETTINGS
-            .read()
-            .unwrap()
-            .get(keys::OPTION_PROXY_URL)
-            .is_some()
-        {
-            return NetworkType::ProxySocks;
-        }
-        NetworkType::Direct
-    }
-
-    pub fn get_unlock_pin() -> String {
-        if Self::is_disable_unlock_pin() {
-            return String::new();
-        }
-        CONFIG2.read().unwrap().unlock_pin.clone()
-    }
-
-    pub fn set_unlock_pin(pin: &str) {
-        if Self::is_disable_unlock_pin() {
-            return;
-        }
-        let mut config = CONFIG2.write().unwrap();
-        if pin == config.unlock_pin {
-            return;
-        }
-        config.unlock_pin = pin.to_string();
-        config.store();
-    }
-
-    pub fn get_trusted_devices_json() -> String {
-        serde_json::to_string(&Self::get_trusted_devices()).unwrap_or_default()
-    }
-hintText: '34675',
-    pub fn get_trusted_devices() -> Vec<TrustedDevice> {
-        let (devices, synced) = TRUSTED_DEVICES.read().unwrap().clone();
-        if synced {
-            return devices;
-        }
-        let devices = CONFIG2.read().unwrap().trusted_devices.clone();
-        let (devices, succ, store) = decrypt_str_or_original(&devices, PASSWORD_ENC_VERSION);
-        if succ {
-            let mut devices: Vec<TrustedDevice> =
-                serde_json::from_str(&devices).unwrap_or_default();
-            let len = devices.len();
-            devices.retain(|d| !d.outdate());
-            if store || devices.len() != len {
-                Self::set_trusted_devices(devices.clone());
-            }
-            *TRUSTED_DEVICES.write().unwrap() = (devices.clone(), true);
-            devices
-        } else {
-            Default::default()
-        }
-    }
-
-    fn set_trusted_devices(mut trusted_devices: Vec<TrustedDevice>) {
-        trusted_devices.retain(|d| !d.outdate());
-        let devices = serde_json::to_string(&trusted_devices).unwrap_or_default();
-        let max_len = 1024 * 1024;
-        if devices.bytes().len() > max_len {
-            log::error!("Trusted devices too large: {}", devices.bytes().len());
-            return;
-        }
-        let devices = encrypt_str_or_original(&devices, PASSWORD_ENC_VERSION, max_len);
-        let mut config = CONFIG2.write().unwrap();
-        config.trusted_devices = devices;
-        config.store();
-        *TRUSTED_DEVICES.write().unwrap() = (trusted_devices, true);
-    }
-
-    pub fn add_trusted_device(device: TrustedDevice) {
-        let mut devices = Self::get_trusted_devices();
-        devices.retain(|d| d.hwid != device.hwid);
-        devices.push(device);
-        Self::set_trusted_devices(devices);
-    }
-
-    pub fn remove_trusted_devices(hwids: &Vec<Bytes>) {
-        let mut devices = Self::get_trusted_devices();
-        devices.retain(|d| !hwids.contains(&d.hwid));
-        Self::set_trusted_devices(devices);
-    }
-
-    pub fn clear_trusted_devices() {
-        Self::set_trusted_devices(Default::default());
-    }
-
-    pub fn get() -> Config {
-        return CONFIG.read().unwrap().clone();
-    }
-
-    pub fn set(cfg: Config) -> bool {
-        let mut lock = CONFIG.write().unwrap();
-        if *lock == cfg {
-            return false;
-        }
-        *lock = cfg;
-        lock.store();
-        true
-    }
-
-    fn with_extension(path: PathBuf) -> PathBuf {
-        let ext = path.extension();
-        if let Some(ext) = ext {
-            let ext = format!("{}.toml", ext.to_string_lossy());
-            path.with_extension(ext)
-        } else {
-            path.with_extension("toml")
-        }
-    }
-}
-
-const PEERS: &str = "peers";
-
-impl PeerConfig {
-    pub fn load(id: &str) -> PeerConfig {
-        let _lock = CONFIG.read().unwrap();
-        match confy::load_path(Self::path(id)) {
-            Ok(config) => {
-                let mut config: PeerConfig = config;
-                let mut store = false;
-                let (password, _, store2) =
-                    decrypt_vec_or_original(&config.password, PASSWORD_ENC_VERSION);
-                config.password = password;
-                store = store || store2;
-                for opt in ["rdp_password", "os-username", "os-password"] {
-                    if let Some(v) = config.options.get_mut(opt) {
-                        let (encrypted, _, store2) =
-                            decrypt_str_or_original(v, PASSWORD_ENC_VERSION);
-                        *v = encrypted;
-                        store = store || store2;
-                    }
-                }
-                if store {
-                    config.store_(id);
-                }
-                config
-            }
-            Err(err) => {
-                if let confy::ConfyError::GeneralLoadError(err) = &err {
-                    if err.kind() == std::io::ErrorKind::NotFound {
-                        return Default::default();
-                    }
-                }
-                log::error!("Failed to load peer config '{}': {}", id, err);
-                Default::default()
-            }
-        }
-    }
-
-    pub fn store(&self, id: &str) {
-        let _lock = CONFIG.read().unwrap();
-        self.store_(id);
-    }
-
-    fn store_(&self, id: &str) {
-        let mut config = self.clone();
-        config.password =
-            encrypt_vec_or_original(&config.password, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN);
-        for opt in ["rdp_password", "os-username", "os-password"] {
-            if let Some(v) = config.options.get_mut(opt) {
-                *v = encrypt_str_or_original(v, PASSWORD_ENC_VERSION, ENCRYPT_MAX_LEN)
-            }
-        }
-        if let Err(err) = store_path(Self::path(id), config) {
-            log::error!("Failed to store config: {}", err);
-        }
-        NEW_STORED_PEER_CONFIG.lock().unwrap().insert(id.to_owned());
-    }
-
-    pub fn remove(id: &str) {
-        fs::remove_file(Self::path(id)).ok();
-    }
-
-    fn path(id: &str) -> PathBuf {
-        //If the id contains invalid chars, encode it
-        let forbidden_paths = Regex::new(r".*[<>:/\\|\?\*].*");
-        let path: PathBuf;
-        if let Ok(forbidden_paths) = forbidden_paths {
-            let id_encoded = if forbidden_paths.is_match(id) {
-                "base64_".to_string() + base64::encode(id, base64::Variant::Original).as_str()
-            } else {
-                id.to_string()
-            };
-            path = [PEERS, id_encoded.as_str()].iter().collect();
-        } else {
-            log::warn!("Regex create failed: {:?}", forbidden_paths.err());
-            // fallback for failing to create this regex.
-            path = [PEERS, id.replace(":", "_").as_str()].iter().collect();
-        }
-        Config::with_extension(Config::path(path))
-    }
-
-    // The number of peers to load in the first round when showing the peers card list in the main window.
-    // When there're too many peers, loading all of them at once will take a long time.
-    // We can load them in two rouds, the first round loads the first 100 peers, and the second round loads the rest.
-    // Then the UI will show the first 100 peers first, and the rest will be loaded and shown later.
-    pub const BATCH_LOADING_COUNT: usize = 100;
-
-    pub fn get_vec_id_modified_time_path(
-        id_filters: &Option<Vec<String>>,
-    ) -> Vec<(String, SystemTime, PathBuf)> {
-        if let Ok(peers) = Config::path(PEERS).read_dir() {
-            let mut vec_id_modified_time_path = peers
-                .into_iter()
-                .filter_map(|res| match res {
-                    Ok(res) => {
-                        let p = res.path();
-                        if p.is_file()
-                            && p.extension().map(|p| p.to_str().unwrap_or("")) == Some("toml")
-                        {
-                            Some(p)
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                })
-                .map(|p| {
-                    let id = p
-                        .file_stem()
-                        .map(|p| p.to_str().unwrap_or(""))
-                        .unwrap_or("")
-                        .to_owned();
-
-                    let id_decoded_string = if id.starts_with("base64_") && id.len() != 7 {
-                        let id_decoded =
-                            base64::decode(&id[7..], base64::Variant::Original).unwrap_or_default();
-                        String::from_utf8_lossy(&id_decoded).as_ref().to_owned()
-                    } else {
-                        id
-                    };
-                    (id_decoded_string, p)
-                })
-                .filter(|(id, _)| {
-                    let Some(filters) = id_filters else {
-                        return true;
-                    };
-                    filters.contains(id)
-                })
-                .map(|(id, p)| {
-                    let t = crate::get_modified_time(&p);
-                    (id, t, p)
-                })
-                .collect::<Vec<_>>();
-            vec_id_modified_time_path.sort_unstable_by(|a, b| b.1.cmp(&a.1));
-            vec_id_modified_time_path
-        } else {
-            vec![]
-        }
-    }
-
-    #[inline]
-    async fn preload_file_async(path: PathBuf) {
-        let _ = tokio::fs::File::open(path).await;
-    }
-
-    #[tokio::main(flavor = "current_thread")]
-    async fn preload_peers_async() {
-        let now = std::time::Instant::now();
-        let vec_id_modified_time_path = Self::get_vec_id_modified_time_path(&None);
-        let total_count = vec_id_modified_time_path.len();
-        let mut futs = vec![];
-        for (_, _, path) in vec_id_modified_time_path.into_iter() {
-            futs.push(Self::preload_file_async(path));
-            if futs.len() >= Self::BATCH_LOADING_COUNT {
-                let first_load_start = std::time::Instant::now();
-                futures::future::join_all(futs).await;
-                if first_load_start.elapsed().as_millis() < 10 {
-                    // No need to preload the rest if the first load is fast.
-                    return;
-                }
-                futs = vec![];
-            }
-        }
-        if !futs.is_empty() {
-            futures::future::join_all(futs).await;
-        }
-        log::info!(
-            "Preload peers done in {:?}, batch_count: {}, total: {}",
-            now.elapsed(),
-            Self::BATCH_LOADING_COUNT,
-            total_count
-        );
-    }
-
-    // We have to preload all peers in a background thread.
-    // Because we find that opening files the first time after the system (Windows) booting will be very slow, up to 200~400ms.
-    // The reason is that the Windows has "Microsoft Defender Antivirus Service" running in the background, which will scan the file when it's opened the first time.
-    // So we have to preload all peers in a background thread to avoid the delay when opening the file the first time.
-    // We can temporarily stop "Microsoft Defender Antivirus Service" or add the fold to the white list, to verify this. But don't do this in the release version.
-    pub fn preload_peers() {
-        std::thread::spawn(|| {
-            Self::preload_peers_async();
-        });
-    }
-
-    pub fn peers(id_filters: Option<Vec<String>>) -> Vec<(String, SystemTime, PeerConfig)> {
-        let vec_id_modified_time_path = Self::get_vec_id_modified_time_path(&id_filters);
-        Self::batch_peers(
-            &vec_id_modified_time_path,
-            0,
-            Some(vec_id_modified_time_path.len()),
-        )
-        .0
-    }
-
-    pub fn batch_peers(
-        all: &Vec<(String, SystemTime, PathBuf)>,
-        from: usize,
-        to: Option<usize>,
-    ) -> (Vec<(String, SystemTime, PeerConfig)>, usize) {
-        if from >= all.len() {
-            return (vec![], 0);
-        }
-
-        let to = match to {
-            Some(to) => to.min(all.len()),
-            None => (from + Self::BATCH_LOADING_COUNT).min(all.len()),
-        };
-
-        // to <= from is unexpected, but we can just return an empty vec in this case.
-        if to <= from {
-            return (vec![], from);
-        }
-
-        let peers: Vec<_> = all[from..to]
-            .iter()
-            .map(|(id, t, p)| {
-                let c = PeerConfig::load(&id);
-                if c.info.platform.is_empty() {
-                    fs::remove_file(p).ok();
-                }
-                (id.clone(), t.clone(), c)
-            })
-            .filter(|p| !p.2.info.platform.is_empty())
-            .collect();
-        (peers, to)
-    }
-
-    pub fn exists(id: &str) -> bool {
-        Self::path(id).exists()
-    }
-
-    serde_field_string!(
-        default_view_style,
-        deserialize_view_style,
-        UserDefaultConfig::read(keys::OPTION_VIEW_STYLE)
-    );
-    serde_field_string!(
-        default_scroll_style,
-        deserialize_scroll_style,
-        UserDefaultConfig::read(keys::OPTION_SCROLL_STYLE)
-    );
-    serde_field_string!(
-        default_image_quality,
-        deserialize_image_quality,
-        UserDefaultConfig::read(keys::OPTION_IMAGE_QUALITY)
-    );
-    serde_field_string!(
-        default_reverse_mouse_wheel,
-        deserialize_reverse_mouse_wheel,
-        UserDefaultConfig::read(keys::OPTION_REVERSE_MOUSE_WHEEL)
-    );
-    serde_field_string!(
-        default_displays_as_individual_windows,
-        deserialize_displays_as_individual_windows,
-        UserDefaultConfig::read(keys::OPTION_DISPLAYS_AS_INDIVIDUAL_WINDOWS)
-    );
-    serde_field_string!(
-        default_use_all_my_displays_for_the_remote_session,
-        deserialize_use_all_my_displays_for_the_remote_session,
-        UserDefaultConfig::read(keys::OPTION_USE_ALL_MY_DISPLAYS_FOR_THE_REMOTE_SESSION)
-    );
-
-    fn default_custom_image_quality() -> Vec<i32> {
-        let f: f64 = UserDefaultConfig::read(keys::OPTION_CUSTOM_IMAGE_QUALITY)
-            .parse()
-            .unwrap_or(50.0);
-        vec![f as _]
-    }
-
-    fn deserialize_custom_image_quality<'de, D>(deserializer: D) -> Result<Vec<i32>, D::Error>
-    where
-        D: de::Deserializer<'de>,
-    {
-        let v: Vec<i32> = de::Deserialize::deserialize(deserializer)?;
-        if v.len() == 1 && v[0] >= 10 && v[0] <= 0xFFF {
-            Ok(v)
-        } else {
-            Ok(Self::default_custom_image_quality())
-        }
-    }
-
-    fn default_options() -> HashMap<String, String> {
-        let mut mp: HashMap<String, String> = Default::default();
-        let _ = [
-            keys::OPTION_CODEC_PREFERENCE,
-            keys::OPTION_CUSTOM_FPS,
-            keys::OPTION_ZOOM_CURSOR,
-            keys::OPTION_I444,
-            keys::OPTION_SWAP_LEFT_RIGHT_MOUSE,
-            keys::OPTION_COLLAPSE_TOOLBAR,
-        ]
-        .map(|key| {
-            mp.insert(key.to_owned(), UserDefaultConfig::read(key));
-        });
-        mp
-    }
-
-    fn default_trackpad_speed() -> i32 {
-        UserDefaultConfig::read(keys::OPTION_TRACKPAD_SPEED)
-            .parse()
-            .unwrap_or(100)
-    }
-
-    fn deserialize_trackpad_speed<'de, D>(deserializer: D) -> Result<i32, D::Error>
-    where
-        D: de::Deserializer<'de>,
-    {
-        let v: i32 = de::Deserialize::deserialize(deserializer)?;
-        if v >= 10 && v <= 1000 {
-            Ok(v)
-        } else {
-            Ok(Self::default_trackpad_speed())
-        }
-    }
-
-    fn default_edge_scroll_edge_thickness() -> i32 {
-        UserDefaultConfig::read(keys::OPTION_EDGE_SCROLL_EDGE_THICKNESS)
-            .parse()
-            .unwrap_or(100)
-    }
-
-    fn deserialize_edge_scroll_edge_thickness<'de, D>(deserializer: D) -> Result<i32, D::Error>
-    where
-        D: de::Deserializer<'de>,
-    {
-        let v: i32 = de::Deserialize::deserialize(deserializer)?;
-        if v >= 20 && v <= 150 {
-            Ok(v)
-        } else {
-            Ok(Self::default_edge_scroll_edge_thickness())
-        }
-    }
-}
-
-serde_field_bool!(
-    ShowRemoteCursor,
-    "show_remote_cursor",
-    default_show_remote_cursor,
-    "ShowRemoteCursor::default_show_remote_cursor"
-);
-serde_field_bool!(
-    FollowRemoteCursor,
-    "follow_remote_cursor",
-    default_follow_remote_cursor,
-    "FollowRemoteCursor::default_follow_remote_cursor"
-);
-
-serde_field_bool!(
-    FollowRemoteWindow,
-    "follow_remote_window",
-    default_follow_remote_window,
-    "FollowRemoteWindow::default_follow_remote_window"
-);
-serde_field_bool!(
-    ShowQualityMonitor,
-    "show_quality_monitor",
-    default_show_quality_monitor,
-    "ShowQualityMonitor::default_show_quality_monitor"
-);
-serde_field_bool!(
-    DisableAudio,
-    "disable_audio",
-    default_disable_audio,
-    "DisableAudio::default_disable_audio"
-);
-serde_field_bool!(
-    EnableFileCopyPaste,
-    "enable-file-copy-paste",
-    default_enable_file_copy_paste,
-    "EnableFileCopyPaste::default_enable_file_copy_paste"
-);
-serde_field_bool!(
-    DisableClipboard,
-    "disable_clipboard",
-    default_disable_clipboard,
-    "DisableClipboard::default_disable_clipboard"
-);
-serde_field_bool!(
-    LockAfterSessionEnd,
-    "lock_after_session_end",
-    default_lock_after_session_end,
-    "LockAfterSessionEnd::default_lock_after_session_end"
-);
-serde_field_bool!(
-    TerminalPersistent,
-    "terminal-persistent",
-    default_terminal_persistent,
-    "TerminalPersistent::default_terminal_persistent"
-);
-serde_field_bool!(
-    PrivacyMode,
-    "privacy_mode",
-    default_privacy_mode,
-    "PrivacyMode::default_privacy_mode"
-);
-
-serde_field_bool!(
-    AllowSwapKey,
-    "allow_swap_key",
-    default_allow_swap_key,
-    "AllowSwapKey::default_allow_swap_key"
-);
-
-serde_field_bool!(
-    ViewOnly,
-    "view_only",
-    default_view_only,
-    "ViewOnly::default_view_only"
-);
-
-serde_field_bool!(
-    ShowMyCursor,
-    "show_my_cursor",
-    default_show_my_cursor,
-    "ShowMyCursor::default_show_my_cursor"
-);
-
-serde_field_bool!(
-    SyncInitClipboard,
-    "sync-init-clipboard",
-    default_sync_init_clipboard,
-    "SyncInitClipboard::default_sync_init_clipboard"
-);
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct LocalConfig {
-    #[serde(default, deserialize_with = "deserialize_string")]
-    remote_id: String, // latest used one
-    #[serde(default, deserialize_with = "deserialize_string")]
-    kb_layout_type: String,
-    #[serde(default, deserialize_with = "deserialize_size")]
-    size: Size,
-    #[serde(default, deserialize_with = "deserialize_vec_string")]
-    pub fav: Vec<String>,
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    options: HashMap<String, String>,
-    // Various data for flutter ui
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    ui_flutter: HashMap<String, String>,
-}
-
-impl LocalConfig {
-    fn load() -> LocalConfig {
-        Config::load_::<LocalConfig>("_local")
-    }
-
-    fn store(&self) {
-        Config::store_(self, "_local");
-    }
-
-    pub fn get_kb_layout_type() -> String {
-        LOCAL_CONFIG.read().unwrap().kb_layout_type.clone()
-    }
-
-    pub fn set_kb_layout_type(kb_layout_type: String) {
-        let mut config = LOCAL_CONFIG.write().unwrap();
-        config.kb_layout_type = kb_layout_type;
-        config.store();
-    }
-
-    pub fn get_size() -> Size {
-        LOCAL_CONFIG.read().unwrap().size
-    }
-
-    pub fn set_size(x: i32, y: i32, w: i32, h: i32) {
-        let mut config = LOCAL_CONFIG.write().unwrap();
-        let size = (x, y, w, h);
-        if size == config.size || size.2 < 300 || size.3 < 300 {
-            return;
-        }
-        config.size = size;
-        config.store();
-    }
-
-    pub fn set_remote_id(remote_id: &str) {
-        let mut config = LOCAL_CONFIG.write().unwrap();
-        if remote_id == config.remote_id {
-            return;
-        }
-        config.remote_id = remote_id.into();
-        config.store();
-    }
-
-    pub fn get_remote_id() -> String {
-        LOCAL_CONFIG.read().unwrap().remote_id.clone()
-    }
-
-    pub fn set_fav(fav: Vec<String>) {
-        let mut lock = LOCAL_CONFIG.write().unwrap();
-        if lock.fav == fav {
-            return;
-        }
-        lock.fav = fav;
-        lock.store();
-    }
-
-    pub fn get_fav() -> Vec<String> {
-        LOCAL_CONFIG.read().unwrap().fav.clone()
-    }
-
-    pub fn get_option(k: &str) -> String {
-        get_or(
-            &OVERWRITE_LOCAL_SETTINGS,
-            &LOCAL_CONFIG.read().unwrap().options,
-            &DEFAULT_LOCAL_SETTINGS,
-            k,
-        )
-        .unwrap_or_default()
-    }
-
-    // Usually get_option should be used.
-    pub fn get_option_from_file(k: &str) -> String {
-        get_or(
-            &OVERWRITE_LOCAL_SETTINGS,
-            &Self::load().options,
-            &DEFAULT_LOCAL_SETTINGS,
-            k,
-        )
-        .unwrap_or_default()
-    }
-
-    pub fn get_bool_option(k: &str) -> bool {
-        option2bool(k, &Self::get_option(k))
-    }
-
-    pub fn set_option(k: String, v: String) {
-        if !is_option_can_save(&OVERWRITE_LOCAL_SETTINGS, &k, &DEFAULT_LOCAL_SETTINGS, &v) {
-            let mut config = LOCAL_CONFIG.write().unwrap();
-            if config.options.remove(&k).is_some() {
-                config.store();
-            }
-            return;
-        }
-        let mut config = LOCAL_CONFIG.write().unwrap();
-        // The custom client will explictly set "default" as the default language.
-        let is_custom_client_default_lang = k == keys::OPTION_LANGUAGE && v == "default";
-        if is_custom_client_default_lang {
-            config.options.insert(k, "".to_owned());
-            config.store();
-            return;
-        }
-        let v2 = if v.is_empty() { None } else { Some(&v) };
-        if v2 != config.options.get(&k) {
-            if v2.is_none() {
-                config.options.remove(&k);
-            } else {
-                config.options.insert(k, v);
-            }
-            config.store();
-        }
-    }
-
-    pub fn get_flutter_option(k: &str) -> String {
-        get_or(
-            &OVERWRITE_LOCAL_SETTINGS,
-            &LOCAL_CONFIG.read().unwrap().ui_flutter,
-            &DEFAULT_LOCAL_SETTINGS,
-            k,
-        )
-        .unwrap_or_default()
-    }
-
-    pub fn set_flutter_option(k: String, v: String) {
-        let mut config = LOCAL_CONFIG.write().unwrap();
-        let v2 = if v.is_empty() { None } else { Some(&v) };
-        if v2 != config.ui_flutter.get(&k) {
-            if v2.is_none() {
-                config.ui_flutter.remove(&k);
-            } else {
-                config.ui_flutter.insert(k, v);
-            }
-            config.store();
-        }
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct DiscoveryPeer {
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub id: String,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub username: String,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub hostname: String,
-    #[serde(default, deserialize_with = "deserialize_string")]
-    pub platform: String,
-    #[serde(default, deserialize_with = "deserialize_bool")]
-    pub online: bool,
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    pub ip_mac: HashMap<String, String>,
-}
-
-impl DiscoveryPeer {
-    pub fn is_same_peer(&self, other: &DiscoveryPeer) -> bool {
-        self.id == other.id && self.username == other.username
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct LanPeers {
-    #[serde(default, deserialize_with = "deserialize_vec_discoverypeer")]
-    pub peers: Vec<DiscoveryPeer>,
-}
-
-impl LanPeers {
-    pub fn load() -> LanPeers {
-        let _lock = CONFIG.read().unwrap();
-        match confy::load_path(Config::file_("_lan_peers")) {
-            Ok(peers) => peers,
-            Err(err) => {
-                log::error!("Failed to load lan peers: {}", err);
-                Default::default()
-            }
-        }
-    }
-
-    pub fn store(peers: &[DiscoveryPeer]) {
-        let f = LanPeers {
-            peers: peers.to_owned(),
-        };
-        if let Err(err) = store_path(Config::file_("_lan_peers"), f) {
-            log::error!("Failed to store lan peers: {}", err);
-        }
-    }
-
-    pub fn modify_time() -> crate::ResultType<u64> {
-        let p = Config::file_("_lan_peers");
-        Ok(fs::metadata(p)?
-            .modified()?
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_millis() as _)
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct UserDefaultConfig {
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    options: HashMap<String, String>,
-}
-
-impl UserDefaultConfig {
-    fn read(key: &str) -> String {
-        let mut cfg = USER_DEFAULT_CONFIG.write().unwrap();
-        // we do so, because default config may changed in another process, but we don't sync it
-        // but no need to read every time, give a small interval to avoid too many redundant read waste
-        if cfg.1.elapsed() > Duration::from_secs(1) {
-            *cfg = (Self::load(), Instant::now());
-        }
-        cfg.0.get(key)
-    }
-
-    pub fn load() -> UserDefaultConfig {
-        Config::load_::<UserDefaultConfig>("_default")
-    }
-
-    #[inline]
-    fn store(&self) {
-        Config::store_(self, "_default");
-    }
-
-    pub fn get(&self, key: &str) -> String {
-        match key {
-            #[cfg(any(target_os = "android", target_os = "ios"))]
-            keys::OPTION_VIEW_STYLE => self.get_string(key, "adaptive", vec!["original"]),
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            keys::OPTION_VIEW_STYLE => self.get_string(key, "original", vec!["adaptive"]),
-            keys::OPTION_SCROLL_STYLE => {
-                self.get_string(key, "scrollauto", vec!["scrolledge", "scrollbar"])
-            }
-            keys::OPTION_IMAGE_QUALITY => {
-                self.get_string(key, "balanced", vec!["best", "low", "custom"])
-            }
-            keys::OPTION_CODEC_PREFERENCE => {
-                self.get_string(key, "auto", vec!["vp8", "vp9", "av1", "h264", "h265"])
-            }
-            keys::OPTION_CUSTOM_IMAGE_QUALITY => self.get_num_string(key, 50.0, 10.0, 0xFFF as f64),
-            keys::OPTION_CUSTOM_FPS => self.get_num_string(key, 30.0, 5.0, 120.0),
-            keys::OPTION_ENABLE_FILE_COPY_PASTE => self.get_string(key, "Y", vec!["", "N"]),
-            keys::OPTION_EDGE_SCROLL_EDGE_THICKNESS => self.get_num_string(key, 100, 20, 150),
-            keys::OPTION_TRACKPAD_SPEED => self.get_num_string(key, 100, 10, 1000),
-            _ => self
-                .get_after(key)
-                .map(|v| v.to_string())
-                .unwrap_or_default(),
-        }
-    }
-
-    pub fn set(&mut self, key: String, value: String) {
-        if !is_option_can_save(
-            &OVERWRITE_DISPLAY_SETTINGS,
-            &key,
-            &DEFAULT_DISPLAY_SETTINGS,
-            &value,
-        ) {
-            if self.options.remove(&key).is_some() {
-                self.store();
-            }
-            return;
-        }
-        if value.is_empty() {
-            self.options.remove(&key);
-        } else {
-            self.options.insert(key, value);
-        }
-        self.store();
-    }
-
-    #[inline]
-    fn get_string(&self, key: &str, default: &str, others: Vec<&str>) -> String {
-        match self.get_after(key) {
-            Some(option) => {
-                if others.contains(&option.as_str()) {
-                    option.to_owned()
-                } else {
-                    default.to_owned()
-                }
-            }
-            None => default.to_owned(),
-        }
-    }
-
-    #[inline]
-    fn get_num_string<T>(&self, key: &str, default: T, min: T, max: T) -> String
-    where
-        T: ToString + std::str::FromStr + std::cmp::PartialOrd + std::marker::Copy,
-    {
-        match self.get_after(key) {
-            Some(option) => {
-                let v: T = option.parse().unwrap_or(default);
-                if v >= min && v <= max {
-                    v.to_string()
-                } else {
-                    default.to_string()
-                }
-            }
-            None => default.to_string(),
-        }
-    }
-
-    fn get_after(&self, k: &str) -> Option<String> {
-        get_or(
-            &OVERWRITE_DISPLAY_SETTINGS,
-            &self.options,
-            &DEFAULT_DISPLAY_SETTINGS,
-            k,
-        )
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct AbPeer {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub id: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub hash: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub username: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub hostname: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub platform: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub alias: String,
-    #[serde(default, deserialize_with = "deserialize_vec_string")]
-    pub tags: Vec<String>,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct AbEntry {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub guid: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub name: String,
-    #[serde(default, deserialize_with = "deserialize_vec_abpeer")]
-    pub peers: Vec<AbPeer>,
-    #[serde(default, deserialize_with = "deserialize_vec_string")]
-    pub tags: Vec<String>,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub tag_colors: String,
-}
-
-impl AbEntry {
-    pub fn personal(&self) -> bool {
-        self.name == "My address book" || self.name == "Legacy address book"
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct Ab {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub access_token: String,
-    #[serde(default, deserialize_with = "deserialize_vec_abentry")]
-    pub ab_entries: Vec<AbEntry>,
-}
-
-impl Ab {
-    fn path() -> PathBuf {
-        let filename = format!("{}_ab", APP_NAME.read().unwrap().clone());
-        Config::path(filename)
-    }
-
-    pub fn store(json: String) {
-        if let Ok(mut file) = std::fs::File::create(Self::path()) {
-            let data = compress(json.as_bytes());
-            let max_len = 64 * 1024 * 1024;
-            if data.len() > max_len {
-                // maxlen of function decompress
-                log::error!("ab data too large, {} > {}", data.len(), max_len);
-                return;
-            }
-            if let Ok(data) = symmetric_crypt(&data, true) {
-                file.write_all(&data).ok();
-            }
-        };
-    }
-
-    pub fn load() -> Ab {
-        if let Ok(mut file) = std::fs::File::open(Self::path()) {
-            let mut data = vec![];
-            if file.read_to_end(&mut data).is_ok() {
-                if let Ok(data) = symmetric_crypt(&data, false) {
-                    let data = decompress(&data);
-                    if let Ok(ab) = serde_json::from_str::<Ab>(&String::from_utf8_lossy(&data)) {
-                        return ab;
-                    }
-                }
-            }
-        };
-        Self::remove();
-        Ab::default()
-    }
-
-    pub fn remove() {
-        std::fs::remove_file(Self::path()).ok();
-    }
-}
-
-// use default value when field type is wrong
-macro_rules! deserialize_default {
-    ($func_name:ident, $return_type:ty) => {
-        fn $func_name<'de, D>(deserializer: D) -> Result<$return_type, D::Error>
-        where
-            D: de::Deserializer<'de>,
-        {
-            Ok(de::Deserialize::deserialize(deserializer).unwrap_or_default())
-        }
-    };
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct GroupPeer {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub id: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub username: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub hostname: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub platform: String,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub login_name: String,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct GroupUser {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub name: String,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct DeviceGroup {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub name: String,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct Group {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_string",
-        skip_serializing_if = "String::is_empty"
-    )]
-    pub access_token: String,
-    #[serde(default, deserialize_with = "deserialize_vec_groupuser")]
-    pub users: Vec<GroupUser>,
-    #[serde(default, deserialize_with = "deserialize_vec_grouppeer")]
-    pub peers: Vec<GroupPeer>,
-    #[serde(default, deserialize_with = "deserialize_vec_devicegroup")]
-    pub device_groups: Vec<DeviceGroup>,
-}
-
-impl Group {
-    fn path() -> PathBuf {
-        let filename = format!("{}_group", APP_NAME.read().unwrap().clone());
-        Config::path(filename)
-    }
-
-    pub fn store(json: String) {
-        if let Ok(mut file) = std::fs::File::create(Self::path()) {
-            let data = compress(json.as_bytes());
-            let max_len = 64 * 1024 * 1024;
-            if data.len() > max_len {
-                // maxlen of function decompress
-                return;
-            }
-            if let Ok(data) = symmetric_crypt(&data, true) {
-                file.write_all(&data).ok();
-            }
-        };
-    }
-
-    pub fn load() -> Self {
-        if let Ok(mut file) = std::fs::File::open(Self::path()) {
-            let mut data = vec![];
-            if file.read_to_end(&mut data).is_ok() {
-                if let Ok(data) = symmetric_crypt(&data, false) {
-                    let data = decompress(&data);
-                    if let Ok(group) = serde_json::from_str::<Self>(&String::from_utf8_lossy(&data))
-                    {
-                        return group;
-                    }
-                }
-            }
-        };
-        Self::remove();
-        Self::default()
-    }
-
-    pub fn remove() {
-        std::fs::remove_file(Self::path()).ok();
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct TrustedDevice {
-    pub hwid: Bytes,
-    pub time: i64,
-    pub id: String,
-    pub name: String,
-    pub platform: String,
-}
-
-impl TrustedDevice {
-    pub fn outdate(&self) -> bool {
-        const DAYS_90: i64 = 90 * 24 * 60 * 60 * 1000;
-        self.time + DAYS_90 < crate::get_time()
-    }
-}
-
-deserialize_default!(deserialize_string, String);
-deserialize_default!(deserialize_bool, bool);
-deserialize_default!(deserialize_i32, i32);
-deserialize_default!(deserialize_vec_u8, Vec<u8>);
-deserialize_default!(deserialize_vec_string, Vec<String>);
-deserialize_default!(deserialize_vec_i32_string_i32, Vec<(i32, String, i32)>);
-deserialize_default!(deserialize_vec_discoverypeer, Vec<DiscoveryPeer>);
-deserialize_default!(deserialize_vec_abpeer, Vec<AbPeer>);
-deserialize_default!(deserialize_vec_abentry, Vec<AbEntry>);
-deserialize_default!(deserialize_vec_groupuser, Vec<GroupUser>);
-deserialize_default!(deserialize_vec_grouppeer, Vec<GroupPeer>);
-deserialize_default!(deserialize_vec_devicegroup, Vec<DeviceGroup>);
-deserialize_default!(deserialize_keypair, KeyPair);
-deserialize_default!(deserialize_size, Size);
-deserialize_default!(deserialize_hashmap_string_string, HashMap<String, String>);
-deserialize_default!(deserialize_hashmap_string_bool,  HashMap<String, bool>);
-deserialize_default!(deserialize_hashmap_resolutions, HashMap<String, Resolution>);
-
-#[inline]
-fn get_or(
-    a: &RwLock<HashMap<String, String>>,
-    b: &HashMap<String, String>,
-    c: &RwLock<HashMap<String, String>>,
-    k: &str,
-) -> Option<String> {
-    a.read()
-        .unwrap()
-        .get(k)
-        .or(b.get(k))
-        .or(c.read().unwrap().get(k))
-        .cloned()
-}
-
-#[inline]
-fn is_option_can_save(
-    overwrite: &RwLock<HashMap<String, String>>,
-    k: &str,
-    defaults: &RwLock<HashMap<String, String>>,
-    v: &str,
-) -> bool {
-    if overwrite.read().unwrap().contains_key(k)
-        || defaults.read().unwrap().get(k).map_or(false, |x| x == v)
-    {
-        return false;
-    }
-    true
-}
-
-#[inline]
-pub fn is_incoming_only() -> bool {
-    HARD_SETTINGS
-        .read()
-        .unwrap()
-        .get("conn-type")
-        .map_or(false, |x| x == ("incoming"))
-}
-
-#[inline]
-pub fn is_outgoing_only() -> bool {
-    HARD_SETTINGS
-        .read()
-        .unwrap()
-        .get("conn-type")
-        .map_or(false, |x| x == ("outgoing"))
-}
-
-#[inline]
-fn is_some_hard_opton(name: &str) -> bool {
-    HARD_SETTINGS
-        .read()
-        .unwrap()
-        .get(name)
-        .map_or(false, |x| x == ("Y"))
-}
-
-#[inline]
-pub fn is_disable_tcp_listen() -> bool {
-    is_some_hard_opton("disable-tcp-listen")
-}
-
-#[inline]
-pub fn is_disable_settings() -> bool {
-    is_some_hard_opton("disable-settings")
-}
-
-#[inline]
-pub fn is_disable_ab() -> bool {
-    is_some_hard_opton("disable-ab")
-}
-
-#[inline]
-pub fn is_disable_account() -> bool {
-    is_some_hard_opton("disable-account")
-}
-
-#[inline]
-pub fn is_disable_installation() -> bool {
-    is_some_hard_opton("disable-installation")
-}
-
-// This function must be kept the same as the one in flutter and sciter code.
-// flutter: flutter/lib/common.dart -> option2bool()
-// sciter: Does not have the function, but it should be kept the same.
-pub fn option2bool(option: &str, value: &str) -> bool {
-    if option.starts_with("enable-") {
-        value != "N"
-    } else if option.starts_with("allow-")
-        || option == "stop-service"
-        || option == keys::OPTION_DIRECT_SERVER
-        || option == "force-always-relay"
-    {
-        value == "Y"
-    } else {
-        value != "N"
-    }
-}
-
-pub fn use_ws() -> bool {
-    let option = keys::OPTION_ALLOW_WEBSOCKET;
-    option2bool(option, &Config::get_option(option))
-}
-
-pub fn allow_insecure_tls_fallback() -> bool {
-    let option = keys::OPTION_ALLOW_INSECURE_TLS_FALLBACK;
-    option2bool(option, &Config::get_option(option))
-}
-
-pub mod keys {
-    pub const OPTION_VIEW_ONLY: &str = "view_only";
-    pub const OPTION_SHOW_MONITORS_TOOLBAR: &str = "show_monitors_toolbar";
-    pub const OPTION_COLLAPSE_TOOLBAR: &str = "collapse_toolbar";
-    pub const OPTION_SHOW_REMOTE_CURSOR: &str = "show_remote_cursor";
-    pub const OPTION_FOLLOW_REMOTE_CURSOR: &str = "follow_remote_cursor";
-    pub const OPTION_FOLLOW_REMOTE_WINDOW: &str = "follow_remote_window";
-    pub const OPTION_ZOOM_CURSOR: &str = "zoom-cursor";
-    pub const OPTION_SHOW_QUALITY_MONITOR: &str = "show_quality_monitor";
-    pub const OPTION_DISABLE_AUDIO: &str = "disable_audio";
-    pub const OPTION_ENABLE_REMOTE_PRINTER: &str = "enable-remote-printer";
-    pub const OPTION_ENABLE_FILE_COPY_PASTE: &str = "enable-file-copy-paste";
-    pub const OPTION_DISABLE_CLIPBOARD: &str = "disable_clipboard";
-    pub const OPTION_LOCK_AFTER_SESSION_END: &str = "lock_after_session_end";
-    pub const OPTION_PRIVACY_MODE: &str = "privacy_mode";
-    pub const OPTION_TOUCH_MODE: &str = "touch-mode";
-    pub const OPTION_I444: &str = "i444";
-    pub const OPTION_REVERSE_MOUSE_WHEEL: &str = "reverse_mouse_wheel";
-    pub const OPTION_SWAP_LEFT_RIGHT_MOUSE: &str = "swap-left-right-mouse";
-    pub const OPTION_DISPLAYS_AS_INDIVIDUAL_WINDOWS: &str = "displays_as_individual_windows";
-    pub const OPTION_USE_ALL_MY_DISPLAYS_FOR_THE_REMOTE_SESSION: &str =
-        "use_all_my_displays_for_the_remote_session";
-    pub const OPTION_VIEW_STYLE: &str = "view_style";
-    pub const OPTION_SCROLL_STYLE: &str = "scroll_style";
-    pub const OPTION_EDGE_SCROLL_EDGE_THICKNESS: &str = "edge-scroll-edge-thickness";
-    pub const OPTION_IMAGE_QUALITY: &str = "image_quality";
-    pub const OPTION_CUSTOM_IMAGE_QUALITY: &str = "custom_image_quality";
-    pub const OPTION_CUSTOM_FPS: &str = "custom-fps";
-    pub const OPTION_CODEC_PREFERENCE: &str = "codec-preference";
-    pub const OPTION_SYNC_INIT_CLIPBOARD: &str = "sync-init-clipboard";
-    pub const OPTION_THEME: &str = "theme";
-    pub const OPTION_LANGUAGE: &str = "lang";
-    pub const OPTION_REMOTE_MENUBAR_DRAG_LEFT: &str = "remote-menubar-drag-left";
-    pub const OPTION_REMOTE_MENUBAR_DRAG_RIGHT: &str = "remote-menubar-drag-right";
-    pub const OPTION_HIDE_AB_TAGS_PANEL: &str = "hideAbTagsPanel";
-    pub const OPTION_ENABLE_CONFIRM_CLOSING_TABS: &str = "enable-confirm-closing-tabs";
-    pub const OPTION_ENABLE_OPEN_NEW_CONNECTIONS_IN_TABS: &str =
-        "enable-open-new-connections-in-tabs";
-    pub const OPTION_TEXTURE_RENDER: &str = "use-texture-render";
-    pub const OPTION_ALLOW_D3D_RENDER: &str = "allow-d3d-render";
-    pub const OPTION_ENABLE_CHECK_UPDATE: &str = "enable-check-update";
-    pub const OPTION_ALLOW_AUTO_UPDATE: &str = "allow-auto-update";
-    pub const OPTION_SYNC_AB_WITH_RECENT_SESSIONS: &str = "sync-ab-with-recent-sessions";
-    pub const OPTION_SYNC_AB_TAGS: &str = "sync-ab-tags";
-    pub const OPTION_FILTER_AB_BY_INTERSECTION: &str = "filter-ab-by-intersection";
-    pub const OPTION_ACCESS_MODE: &str = "access-mode";
-    pub const OPTION_ENABLE_KEYBOARD: &str = "enable-keyboard";
-    pub const OPTION_ENABLE_CLIPBOARD: &str = "enable-clipboard";
-    pub const OPTION_ENABLE_FILE_TRANSFER: &str = "enable-file-transfer";
-    pub const OPTION_ENABLE_CAMERA: &str = "enable-camera";
-    pub const OPTION_ENABLE_TERMINAL: &str = "enable-terminal";
-    pub const OPTION_TERMINAL_PERSISTENT: &str = "terminal-persistent";
-    pub const OPTION_ENABLE_AUDIO: &str = "enable-audio";
-    pub const OPTION_ENABLE_TUNNEL: &str = "enable-tunnel";
-    pub const OPTION_ENABLE_REMOTE_RESTART: &str = "enable-remote-restart";
-    pub const OPTION_ENABLE_RECORD_SESSION: &str = "enable-record-session";
-    pub const OPTION_ENABLE_BLOCK_INPUT: &str = "enable-block-input";
-    pub const OPTION_ALLOW_REMOTE_CONFIG_MODIFICATION: &str = "allow-remote-config-modification";
-    pub const OPTION_ALLOW_NUMERNIC_ONE_TIME_PASSWORD: &str = "allow-numeric-one-time-password";
-    pub const OPTION_ENABLE_LAN_DISCOVERY: &str = "enable-lan-discovery";
-    pub const OPTION_DIRECT_SERVER: &str = "direct-server";
-    pub const OPTION_DIRECT_ACCESS_PORT: &str = "direct-access-port";
-    pub const OPTION_WHITELIST: &str = "whitelist";
-    pub const OPTION_ALLOW_AUTO_DISCONNECT: &str = "allow-auto-disconnect";
-    pub const OPTION_AUTO_DISCONNECT_TIMEOUT: &str = "auto-disconnect-timeout";
-    pub const OPTION_ALLOW_ONLY_CONN_WINDOW_OPEN: &str = "allow-only-conn-window-open";
-    pub const OPTION_ALLOW_AUTO_RECORD_INCOMING: &str = "allow-auto-record-incoming";
-    pub const OPTION_ALLOW_AUTO_RECORD_OUTGOING: &str = "allow-auto-record-outgoing";
-    pub const OPTION_VIDEO_SAVE_DIRECTORY: &str = "video-save-directory";
-    pub const OPTION_ENABLE_ABR: &str = "enable-abr";
-    pub const OPTION_ALLOW_REMOVE_WALLPAPER: &str = "allow-remove-wallpaper";
-    pub const OPTION_ALLOW_ALWAYS_SOFTWARE_RENDER: &str = "allow-always-software-render";
-    pub const OPTION_ALLOW_LINUX_HEADLESS: &str = "allow-linux-headless";
-    pub const OPTION_ENABLE_HWCODEC: &str = "enable-hwcodec";
-    pub const OPTION_APPROVE_MODE: &str = "approve-mode";
-    pub const OPTION_VERIFICATION_METHOD: &str = "verification-method";
-    pub const OPTION_TEMPORARY_PASSWORD_LENGTH: &str = "temporary-password-length";
-    pub const OPTION_CUSTOM_RENDEZVOUS_SERVER: &str = "custom-rendezvous-server";
-    pub const OPTION_API_SERVER: &str = "api-server";
-    pub const OPTION_KEY: &str = "key";
-    pub const OPTION_ALLOW_WEBSOCKET: &str = "allow-websocket";
-    pub const OPTION_PRESET_ADDRESS_BOOK_NAME: &str = "preset-address-book-name";
-    pub const OPTION_PRESET_ADDRESS_BOOK_TAG: &str = "preset-address-book-tag";
-    pub const OPTION_PRESET_ADDRESS_BOOK_ALIAS: &str = "preset-address-book-alias";
-    pub const OPTION_PRESET_ADDRESS_BOOK_PASSWORD: &str = "preset-address-book-password";
-    pub const OPTION_PRESET_ADDRESS_BOOK_NOTE: &str = "preset-address-book-note";
-    pub const OPTION_PRESET_DEVICE_USERNAME: &str = "preset-device-username";
-    pub const OPTION_PRESET_DEVICE_NAME: &str = "preset-device-name";
-    pub const OPTION_PRESET_NOTE: &str = "preset-note";
-    pub const OPTION_ENABLE_DIRECTX_CAPTURE: &str = "enable-directx-capture";
-    pub const OPTION_ENABLE_ANDROID_SOFTWARE_ENCODING_HALF_SCALE: &str =
-        "enable-android-software-encoding-half-scale";
-    pub const OPTION_ENABLE_TRUSTED_DEVICES: &str = "enable-trusted-devices";
-    pub const OPTION_AV1_TEST: &str = "av1-test";
-    pub const OPTION_TRACKPAD_SPEED: &str = "trackpad-speed";
-    pub const OPTION_REGISTER_DEVICE: &str = "register-device";
-    pub const OPTION_RELAY_SERVER: &str = "relay-server";
-    pub const OPTION_ICE_SERVERS: &str = "ice-servers";
-    /// Maximum number of files allowed during a single file transfer request.
-    ///
-    /// Key: `file-transfer-max-files`.
-    /// Unit: number of files (not bytes).
-    ///
-    /// Behaviour:
-    /// - If set to a positive integer N, at most N files are allowed.
-    /// - If set to 0, a safe built-in default is used (see DEFAULT_MAX_VALIDATED_FILES).
-    /// - If unset, negative, or non-integer, no explicit limit is enforced for backward compatibility.
-    pub const OPTION_FILE_TRANSFER_MAX_FILES: &str = "file-transfer-max-files";
-    pub const OPTION_DISABLE_UDP: &str = "disable-udp";
-    pub const OPTION_ALLOW_INSECURE_TLS_FALLBACK: &str = "allow-insecure-tls-fallback";
-    pub const OPTION_SHOW_VIRTUAL_MOUSE: &str = "show-virtual-mouse";
-    // joystick is the virtual mouse.
-    // So `OPTION_SHOW_VIRTUAL_MOUSE` should also be set if `OPTION_SHOW_VIRTUAL_JOYSTICK` is set.
-    pub const OPTION_SHOW_VIRTUAL_JOYSTICK: &str = "show-virtual-joystick";
-    pub const OPTION_ENABLE_FLUTTER_HTTP_ON_RUST: &str = "enable-flutter-http-on-rust";
-    pub const OPTION_ALLOW_ASK_FOR_NOTE: &str = "allow-ask-for-note";
-
-    // built-in options
-    pub const OPTION_DISPLAY_NAME: &str = "display-name";
-    pub const OPTION_PRESET_DEVICE_GROUP_NAME: &str = "preset-device-group-name";
-    pub const OPTION_PRESET_USERNAME: &str = "preset-user-name";
-    pub const OPTION_PRESET_STRATEGY_NAME: &str = "preset-strategy-name";
-    pub const OPTION_REMOVE_PRESET_PASSWORD_WARNING: &str = "remove-preset-password-warning";
-    pub const OPTION_HIDE_SECURITY_SETTINGS: &str = "hide-security-settings";
-    pub const OPTION_HIDE_NETWORK_SETTINGS: &str = "hide-network-settings";
-pub const OPTION_ALLOW_HTTPS_34671: &str = "allow-https-34671";
-    pub const OPTION_HIDE_PROXY_SETTINGS: &str = "hide-proxy-settings";
-    pub const OPTION_HIDE_REMOTE_PRINTER_SETTINGS: &str = "hide-remote-printer-settings";
-    pub const OPTION_HIDE_WEBSOCKET_SETTINGS: &str = "hide-websocket-settings";
-
-    // Connection punch-through options
-    pub const OPTION_ENABLE_UDP_PUNCH: &str = "enable-udp-punch";
-    pub const OPTION_ENABLE_IPV6_PUNCH: &str = "enable-ipv6-punch";
-    pub const OPTION_HIDE_USERNAME_ON_CARD: &str = "hide-username-on-card";
-    pub const OPTION_HIDE_HELP_CARDS: &str = "hide-help-cards";
-    pub const OPTION_DEFAULT_CONNECT_PASSWORD: &str = "default-connect-password";
-    pub const OPTION_HIDE_TRAY: &str = "hide-tray";
-    pub const OPTION_ONE_WAY_CLIPBOARD_REDIRECTION: &str = "one-way-clipboard-redirection";
-    pub const OPTION_ALLOW_LOGON_SCREEN_PASSWORD: &str = "allow-logon-screen-password";
-    pub const OPTION_ONE_WAY_FILE_TRANSFER: &str = "one-way-file-transfer";
-pub const OPTION_ALLOW_HTTPS_34671: &str = "allow-https-34671";
-    pub const OPTION_ALLOW_HOSTNAME_AS_ID: &str = "allow-hostname-as-id";
-    pub const OPTION_HIDE_POWERED_BY_ME: &str = "hide-powered-by-me";
-    pub const OPTION_MAIN_WINDOW_ALWAYS_ON_TOP: &str = "main-window-always-on-top";
-    pub const OPTION_DISABLE_CHANGE_PERMANENT_PASSWORD: &str = "disable-change-permanent-password";
-    pub const OPTION_DISABLE_CHANGE_ID: &str = "disable-change-id";
-    pub const OPTION_DISABLE_UNLOCK_PIN: &str = "disable-unlock-pin";
-
-    // flutter local options
-    pub const OPTION_FLUTTER_REMOTE_MENUBAR_STATE: &str = "remoteMenubarState";
-    pub const OPTION_FLUTTER_PEER_SORTING: &str = "peer-sorting";
-    pub const OPTION_FLUTTER_PEER_TAB_INDEX: &str = "peer-tab-index";
-    pub const OPTION_FLUTTER_PEER_TAB_ORDER: &str = "peer-tab-order";
-    pub const OPTION_FLUTTER_PEER_TAB_VISIBLE: &str = "peer-tab-visible";
-    pub const OPTION_FLUTTER_PEER_CARD_UI_TYLE: &str = "peer-card-ui-type";
-    pub const OPTION_FLUTTER_CURRENT_AB_NAME: &str = "current-ab-name";
-    pub const OPTION_ALLOW_REMOTE_CM_MODIFICATION: &str = "allow-remote-cm-modification";
-
-    pub const OPTION_PRINTER_INCOMING_JOB_ACTION: &str = "printer-incomming-job-action";
-    pub const OPTION_PRINTER_ALLOW_AUTO_PRINT: &str = "allow-printer-auto-print";
-    pub const OPTION_PRINTER_SELECTED_NAME: &str = "printer-selected-name";
-
-    // android floating window options
-    pub const OPTION_DISABLE_FLOATING_WINDOW: &str = "disable-floating-window";
-    pub const OPTION_FLOATING_WINDOW_SIZE: &str = "floating-window-size";
-    pub const OPTION_FLOATING_WINDOW_UNTOUCHABLE: &str = "floating-window-untouchable";
-    pub const OPTION_FLOATING_WINDOW_TRANSPARENCY: &str = "floating-window-transparency";
-    pub const OPTION_FLOATING_WINDOW_SVG: &str = "floating-window-svg";
-
-    // android keep screen on
-    pub const OPTION_KEEP_SCREEN_ON: &str = "keep-screen-on";
-
-    // Server-side: keep host system awake during incoming sessions (Security setting)
-    pub const OPTION_KEEP_AWAKE_DURING_INCOMING_SESSIONS: &str = "keep-awake-during-incoming-sessions";
-
-    // Client-side: keep client system awake during outgoing sessions (General setting)  
-    pub const OPTION_KEEP_AWAKE_DURING_OUTGOING_SESSIONS: &str = "keep-awake-during-outgoing-sessions";
-
-    pub const OPTION_DISABLE_GROUP_PANEL: &str = "disable-group-panel";
-    pub const OPTION_DISABLE_DISCOVERY_PANEL: &str = "disable-discovery-panel";
-    pub const OPTION_PRE_ELEVATE_SERVICE: &str = "pre-elevate-service";
-
-    // proxy settings
-    // The following options are not real keys, they are just used for custom client advanced settings.
-    // The real keys are in Config2::socks.
-    pub const OPTION_PROXY_URL: &str = "proxy-url";
-    pub const OPTION_PROXY_USERNAME: &str = "proxy-username";
-    pub const OPTION_PROXY_PASSWORD: &str = "proxy-password";
-
-    // DEFAULT_DISPLAY_SETTINGS, OVERWRITE_DISPLAY_SETTINGS
-    pub const KEYS_DISPLAY_SETTINGS: &[&str] = &[
-        OPTION_VIEW_ONLY,
-        OPTION_SHOW_MONITORS_TOOLBAR,
-        OPTION_COLLAPSE_TOOLBAR,
-        OPTION_SHOW_REMOTE_CURSOR,
-        OPTION_FOLLOW_REMOTE_CURSOR,
-        OPTION_FOLLOW_REMOTE_WINDOW,
-        OPTION_ZOOM_CURSOR,
-        OPTION_SHOW_QUALITY_MONITOR,
-        OPTION_DISABLE_AUDIO,
-        OPTION_ENABLE_FILE_COPY_PASTE,
-        OPTION_DISABLE_CLIPBOARD,
-        OPTION_LOCK_AFTER_SESSION_END,
-        OPTION_PRIVACY_MODE,
-        OPTION_TOUCH_MODE,
-        OPTION_I444,
-        OPTION_REVERSE_MOUSE_WHEEL,
-        OPTION_SWAP_LEFT_RIGHT_MOUSE,
-        OPTION_DISPLAYS_AS_INDIVIDUAL_WINDOWS,
-        OPTION_USE_ALL_MY_DISPLAYS_FOR_THE_REMOTE_SESSION,
-        OPTION_VIEW_STYLE,
-        OPTION_TERMINAL_PERSISTENT,
-        OPTION_SCROLL_STYLE,
-        OPTION_EDGE_SCROLL_EDGE_THICKNESS,
-        OPTION_IMAGE_QUALITY,
-        OPTION_CUSTOM_IMAGE_QUALITY,
-        OPTION_CUSTOM_FPS,
-        OPTION_CODEC_PREFERENCE,
-        OPTION_SYNC_INIT_CLIPBOARD,
-        OPTION_TRACKPAD_SPEED,
-    ];
-    // DEFAULT_LOCAL_SETTINGS, OVERWRITE_LOCAL_SETTINGS
-    pub const KEYS_LOCAL_SETTINGS: &[&str] = &[
-        OPTION_THEME,
-        OPTION_LANGUAGE,
-        OPTION_ENABLE_CONFIRM_CLOSING_TABS,
-        OPTION_ENABLE_OPEN_NEW_CONNECTIONS_IN_TABS,
-        OPTION_TEXTURE_RENDER,
-        OPTION_ALLOW_D3D_RENDER,
-        OPTION_SYNC_AB_WITH_RECENT_SESSIONS,
-        OPTION_SYNC_AB_TAGS,
-        OPTION_FILTER_AB_BY_INTERSECTION,
-        OPTION_REMOTE_MENUBAR_DRAG_LEFT,
-        OPTION_REMOTE_MENUBAR_DRAG_RIGHT,
-        OPTION_HIDE_AB_TAGS_PANEL,
-        OPTION_FLUTTER_REMOTE_MENUBAR_STATE,
-        OPTION_FLUTTER_PEER_SORTING,
-        OPTION_FLUTTER_PEER_TAB_INDEX,
-        OPTION_FLUTTER_PEER_TAB_ORDER,
-        OPTION_FLUTTER_PEER_TAB_VISIBLE,
-        OPTION_FLUTTER_PEER_CARD_UI_TYLE,
-        OPTION_FLUTTER_CURRENT_AB_NAME,
-        OPTION_DISABLE_FLOATING_WINDOW,
-        OPTION_FLOATING_WINDOW_SIZE,
-        OPTION_FLOATING_WINDOW_UNTOUCHABLE,
-        OPTION_FLOATING_WINDOW_TRANSPARENCY,
-        OPTION_FLOATING_WINDOW_SVG,
-        OPTION_KEEP_SCREEN_ON,
-        // Client-side: keep client system awake during outgoing sessions (General setting)
-        OPTION_KEEP_AWAKE_DURING_OUTGOING_SESSIONS,
-        OPTION_DISABLE_GROUP_PANEL,
-        OPTION_DISABLE_DISCOVERY_PANEL,
-        OPTION_PRE_ELEVATE_SERVICE,
-        OPTION_ALLOW_REMOTE_CM_MODIFICATION,
-        OPTION_ALLOW_AUTO_RECORD_OUTGOING,
-        OPTION_VIDEO_SAVE_DIRECTORY,
-        OPTION_ENABLE_UDP_PUNCH,
-        OPTION_ENABLE_IPV6_PUNCH,
-        OPTION_TOUCH_MODE,
-        OPTION_SHOW_VIRTUAL_MOUSE,
-        OPTION_SHOW_VIRTUAL_JOYSTICK,
-        OPTION_ENABLE_FLUTTER_HTTP_ON_RUST,
-        OPTION_ALLOW_ASK_FOR_NOTE,
-    ];
-    // DEFAULT_SETTINGS, OVERWRITE_SETTINGS
-    pub const KEYS_SETTINGS: &[&str] = &[
-        OPTION_ACCESS_MODE,
-        OPTION_ENABLE_KEYBOARD,
-        OPTION_ENABLE_CLIPBOARD,
-        OPTION_ENABLE_FILE_TRANSFER,
-        OPTION_ENABLE_CAMERA,
-        OPTION_ENABLE_TERMINAL,
-        OPTION_ENABLE_REMOTE_PRINTER,
-        OPTION_ENABLE_AUDIO,
-        OPTION_ENABLE_TUNNEL,
-        OPTION_ENABLE_REMOTE_RESTART,
-        OPTION_ENABLE_RECORD_SESSION,
-        OPTION_ENABLE_BLOCK_INPUT,
-        OPTION_ALLOW_REMOTE_CONFIG_MODIFICATION,
-        OPTION_ALLOW_NUMERNIC_ONE_TIME_PASSWORD,
-        OPTION_ENABLE_LAN_DISCOVERY,
-        OPTION_DIRECT_SERVER,
-        OPTION_DIRECT_ACCESS_PORT,
-        OPTION_WHITELIST,
-        OPTION_ALLOW_AUTO_DISCONNECT,
-        OPTION_AUTO_DISCONNECT_TIMEOUT,
-        OPTION_ALLOW_ONLY_CONN_WINDOW_OPEN,
-        OPTION_ALLOW_AUTO_RECORD_INCOMING,
-        OPTION_ENABLE_ABR,
-        OPTION_ALLOW_REMOVE_WALLPAPER,
-        OPTION_ALLOW_ALWAYS_SOFTWARE_RENDER,
-        OPTION_ALLOW_LINUX_HEADLESS,
-        OPTION_ENABLE_HWCODEC,
-        OPTION_APPROVE_MODE,
-        OPTION_VERIFICATION_METHOD,
-        OPTION_TEMPORARY_PASSWORD_LENGTH,
-        OPTION_PROXY_URL,
-        OPTION_PROXY_USERNAME,
-        OPTION_PROXY_PASSWORD,
-        OPTION_CUSTOM_RENDEZVOUS_SERVER,
-        OPTION_API_SERVER,
-        OPTION_KEY,
-        OPTION_ALLOW_WEBSOCKET,
-        OPTION_PRESET_ADDRESS_BOOK_NAME,
-        OPTION_PRESET_ADDRESS_BOOK_TAG,
-        OPTION_PRESET_ADDRESS_BOOK_ALIAS,
-        OPTION_PRESET_ADDRESS_BOOK_PASSWORD,
-        OPTION_PRESET_ADDRESS_BOOK_NOTE,
-        OPTION_PRESET_DEVICE_USERNAME,
-        OPTION_PRESET_DEVICE_NAME,
-        OPTION_PRESET_NOTE,
-        OPTION_ENABLE_DIRECTX_CAPTURE,
-        OPTION_ENABLE_ANDROID_SOFTWARE_ENCODING_HALF_SCALE,
-        OPTION_ENABLE_TRUSTED_DEVICES,
-        OPTION_RELAY_SERVER,
-        OPTION_ICE_SERVERS,
-        OPTION_DISABLE_UDP,
-        OPTION_ALLOW_INSECURE_TLS_FALLBACK,
-        OPTION_KEEP_AWAKE_DURING_INCOMING_SESSIONS,
-    ];
-
-    // BUILDIN_SETTINGS
-    pub const KEYS_BUILDIN_SETTINGS: &[&str] = &[
-        OPTION_DISPLAY_NAME,
-        OPTION_PRESET_DEVICE_GROUP_NAME,
-        OPTION_PRESET_USERNAME,
-OPTION_ALLOW_HTTPS_34671,
-        OPTION_REMOVE_PRESET_PASSWORD_WARNING,
-        OPTION_HIDE_SECURITY_SETTINGS,
-        OPTION_HIDE_NETWORK_SETTINGS,
-        OPTION_HIDE_SERVER_SETTINGS,
-        OPTION_HIDE_PROXY_SETTINGS,
-        OPTION_HIDE_REMOTE_PRINTER_SETTINGS,
-        OPTION_HIDE_WEBSOCKET_SETTINGS,
-        OPTION_HIDE_USERNAME_ON_CARD,
-        OPTION_HIDE_HELP_CARDS,
-        OPTION_DEFAULT_CONNECT_PASSWORD,
-        OPTION_HIDE_TRAY,
-        OPTION_ONE_WAY_CLIPBOARD_REDIRECTION,
-        OPTION_ALLOW_LOGON_SCREEN_PASSWORD,
-        OPTION_ONE_WAY_FILE_TRANSFER,
-OPTION_ALLOW_HTTPS_34671,
-        OPTION_ALLOW_HOSTNAME_AS_ID,
-        OPTION_REGISTER_DEVICE,
-        OPTION_HIDE_POWERED_BY_ME,
-        OPTION_MAIN_WINDOW_ALWAYS_ON_TOP,
-        OPTION_FILE_TRANSFER_MAX_FILES,
-        OPTION_DISABLE_CHANGE_PERMANENT_PASSWORD,
-        OPTION_DISABLE_CHANGE_ID,
-        OPTION_DISABLE_UNLOCK_PIN,
-    ];
-}
-
-pub fn common_load<
-    T: serde::Serialize + serde::de::DeserializeOwned + Default + std::fmt::Debug,
->(
-    suffix: &str,
-) -> T {
-    Config::load_::<T>(suffix)
-}
-
-pub fn common_store<T: serde::Serialize>(config: &T, suffix: &str) {
-    Config::store_(config, suffix);
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct Status {
-    #[serde(default, deserialize_with = "deserialize_hashmap_string_string")]
-    values: HashMap<String, String>,
-}
-
-impl Status {
-    fn load() -> Status {
-        Config::load_::<Status>("_status")
-    }
-
-    fn store(&self) {
-        Config::store_(self, "_status");
-    }
-
-    pub fn get(k: &str) -> String {
-        STATUS
-            .read()
-            .unwrap()
-            .values
-            .get(k)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    pub fn set(k: &str, v: String) {
-        if Self::get(k) == v {
-            return;
-        }
-
-        let mut st = STATUS.write().unwrap();
-        st.values.insert(k.to_owned(), v);
-        st.store();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_serialize() {
-        let cfg: Config = Default::default();
-        let res = toml::to_string_pretty(&cfg);
-        assert!(res.is_ok());
-        let cfg: PeerConfig = Default::default();
-        let res = toml::to_string_pretty(&cfg);
-        assert!(res.is_ok());
-    }
-
-    #[test]
-    fn test_overwrite_settings() {
-        DEFAULT_SETTINGS
-            .write()
-            .unwrap()
-            .insert("b".to_string(), "a".to_string());
-        DEFAULT_SETTINGS
-            .write()
-            .unwrap()
-            .insert("c".to_string(), "a".to_string());
-        CONFIG2
-            .write()
-            .unwrap()
-            .options
-            .insert("a".to_string(), "b".to_string());
-        CONFIG2
-            .write()
-            .unwrap()
-            .options
-            .insert("b".to_string(), "b".to_string());
-        OVERWRITE_SETTINGS
-            .write()
-            .unwrap()
-            .insert("b".to_string(), "c".to_string());
-        OVERWRITE_SETTINGS
-            .write()
-            .unwrap()
-            .insert("c".to_string(), "f".to_string());
-        OVERWRITE_SETTINGS
-            .write()
-            .unwrap()
-            .insert("d".to_string(), "c".to_string());
-        let mut res: HashMap<String, String> = Default::default();
-        res.insert("b".to_owned(), "c".to_string());
-        res.insert("d".to_owned(), "c".to_string());
-        res.insert("c".to_owned(), "a".to_string());
-        Config::purify_options(&mut res);
-        assert!(res.len() == 0);
-        res.insert("b".to_owned(), "c".to_string());
-        res.insert("d".to_owned(), "c".to_string());
-        res.insert("c".to_owned(), "a".to_string());
-        res.insert("f".to_owned(), "a".to_string());
-        Config::purify_options(&mut res);
-        assert!(res.len() == 1);
-        res.insert("b".to_owned(), "c".to_string());
-        res.insert("d".to_owned(), "c".to_string());
-        res.insert("c".to_owned(), "a".to_string());
-        res.insert("f".to_owned(), "a".to_string());
-        res.insert("e".to_owned(), "d".to_string());
-        Config::purify_options(&mut res);
-        assert!(res.len() == 2);
-        res.insert("b".to_owned(), "c".to_string());
-        res.insert("d".to_owned(), "c".to_string());
-        res.insert("c".to_owned(), "a".to_string());
-        res.insert("f".to_owned(), "a".to_string());
-        res.insert("c".to_owned(), "d".to_string());
-        res.insert("d".to_owned(), "cc".to_string());
-        Config::purify_options(&mut res);
-        DEFAULT_SETTINGS
-            .write()
-            .unwrap()
-            .insert("f".to_string(), "c".to_string());
-        Config::purify_options(&mut res);
-        assert!(res.len() == 2);
-        DEFAULT_SETTINGS
-            .write()
-            .unwrap()
-            .insert("f".to_string(), "a".to_string());
-        Config::purify_options(&mut res);
-        assert!(res.len() == 1);
-        let res = Config::get_options();
-        assert!(res["a"] == "b");
-        assert!(res["c"] == "f");
-        assert!(res["b"] == "c");
-        assert!(res["d"] == "c");
-        assert!(Config::get_option("a") == "b");
-        assert!(Config::get_option("c") == "f");
-        assert!(Config::get_option("b") == "c");
-        assert!(Config::get_option("d") == "c");
-        DEFAULT_SETTINGS.write().unwrap().clear();
-        OVERWRITE_SETTINGS.write().unwrap().clear();
-        CONFIG2.write().unwrap().options.clear();
-
-        DEFAULT_LOCAL_SETTINGS
-            .write()
-            .unwrap()
-            .insert("b".to_string(), "a".to_string());
-        DEFAULT_LOCAL_SETTINGS
-            .write()
-            .unwrap()
-            .insert("c".to_string(), "a".to_string());
-        LOCAL_CONFIG
-            .write()
-            .unwrap()
-            .options
-            .insert("a".to_string(), "b".to_string());
-        LOCAL_CONFIG
-            .write()
-            .unwrap()
-            .options
-            .insert("b".to_string(), "b".to_string());
-        OVERWRITE_LOCAL_SETTINGS
-            .write()
-            .unwrap()
-            .insert("b".to_string(), "c".to_string());
-        OVERWRITE_LOCAL_SETTINGS
-            .write()
-            .unwrap()
-            .insert("d".to_string(), "c".to_string());
-        assert!(LocalConfig::get_option("a") == "b");
-        assert!(LocalConfig::get_option("c") == "a");
-        assert!(LocalConfig::get_option("b") == "c");
-        assert!(LocalConfig::get_option("d") == "c");
-        DEFAULT_LOCAL_SETTINGS.write().unwrap().clear();
-        OVERWRITE_LOCAL_SETTINGS.write().unwrap().clear();
-        LOCAL_CONFIG.write().unwrap().options.clear();
-
-        DEFAULT_DISPLAY_SETTINGS
-            .write()
-            .unwrap()
-            .insert("b".to_string(), "a".to_string());
-        DEFAULT_DISPLAY_SETTINGS
-            .write()
-            .unwrap()
-            .insert("c".to_string(), "a".to_string());
-        USER_DEFAULT_CONFIG
-            .write()
-            .unwrap()
-            .0
-            .options
-            .insert("a".to_string(), "b".to_string());
-        USER_DEFAULT_CONFIG
-            .write()
-            .unwrap()
-            .0
-            .options
-            .insert("b".to_string(), "b".to_string());
-        OVERWRITE_DISPLAY_SETTINGS
-            .write()
-            .unwrap()
-            .insert("b".to_string(), "c".to_string());
-        OVERWRITE_DISPLAY_SETTINGS
-            .write()
-            .unwrap()
-            .insert("d".to_string(), "c".to_string());
-        assert!(UserDefaultConfig::read("a") == "b");
-        assert!(UserDefaultConfig::read("c") == "a");
-        assert!(UserDefaultConfig::read("b") == "c");
-        assert!(UserDefaultConfig::read("d") == "c");
-        DEFAULT_DISPLAY_SETTINGS.write().unwrap().clear();
-        OVERWRITE_DISPLAY_SETTINGS.write().unwrap().clear();
-        LOCAL_CONFIG.write().unwrap().options.clear();
-    }
-
-    #[test]
-    fn test_config_deserialize() {
-        let wrong_type_str = r#"
-        id = true
-        enc_id = []
-        password = 1
-        salt = "123456"
-        key_pair = {}
-        key_confirmed = "1"
-        keys_confirmed = 1
-        "#;
-        let cfg = toml::from_str::<Config>(wrong_type_str);
-        assert_eq!(
-            cfg,
-            Ok(Config {
-                salt: "123456".to_string(),
-                ..Default::default()
-            })
-        );
-
-        let wrong_field_str = r#"
-        hello = "world"
-        key_confirmed = true
-        "#;
-        let cfg = toml::from_str::<Config>(wrong_field_str);
-        assert_eq!(
-            cfg,
-            Ok(Config {
-                key_confirmed: true,
-                ..Default::default()
-            })
-        );
-    }
-
-    #[test]
-    fn test_peer_config_deserialize() {
-        let default_peer_config = toml::from_str::<PeerConfig>("").unwrap();
-        // test custom_resolution
-        {
-            let wrong_type_str = r#"
-            view_style = "adaptive"
-            scroll_style = "scrollbar"
-            custom_resolutions = true
-            "#;
-            let mut cfg_to_compare = default_peer_config.clone();
-            cfg_to_compare.view_style = "adaptive".to_string();
-            cfg_to_compare.scroll_style = "scrollbar".to_string();
-            let cfg = toml::from_str::<PeerConfig>(wrong_type_str);
-            assert_eq!(cfg, Ok(cfg_to_compare), "Failed to test wrong_type_str");
-
-            let wrong_type_str = r#"
-            view_style = "adaptive"
-            scroll_style = "scrollbar"
-            [custom_resolutions.0]
-            w = "1920"
-            h = 1080
-            "#;
-            let mut cfg_to_compare = default_peer_config.clone();
-            cfg_to_compare.view_style = "adaptive".to_string();
-            cfg_to_compare.scroll_style = "scrollbar".to_string();
-            let cfg = toml::from_str::<PeerConfig>(wrong_type_str);
-            assert_eq!(cfg, Ok(cfg_to_compare), "Failed to test wrong_type_str");
-
-            let wrong_field_str = r#"
-            [custom_resolutions.0]
-            w = 1920
-            h = 1080
-            hello = "world"
-            [ui_flutter]
-            "#;
-            let mut cfg_to_compare = default_peer_config.clone();
-            cfg_to_compare.custom_resolutions =
-                HashMap::from([("0".to_string(), Resolution { w: 1920, h: 1080 })]);
-            let cfg = toml::from_str::<PeerConfig>(wrong_field_str);
-            assert_eq!(cfg, Ok(cfg_to_compare), "Failed to test wrong_field_str");
-        }
-    }
-
-    #[test]
-    fn test_store_load() {
-        let peerconfig_id = "123456789";
-        let cfg: PeerConfig = Default::default();
-        cfg.store(&peerconfig_id);
-        assert_eq!(PeerConfig::load(&peerconfig_id), cfg);
-
-        #[cfg(not(windows))]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                // ignore file type information by masking with 0o777 (see https://stackoverflow.com/a/50045872)
-                fs::metadata(PeerConfig::path(&peerconfig_id))
-                    .expect("reading metadata failed")
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
-        }
-    }
+pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+    [
+        ("Status", "Κατάσταση"),
+        ("Your Desktop", "Ο σταθμός εργασίας σας"),
+        ("desk_tip", "Η πρόσβαση στον σταθμό εργασίας σας είναι δυνατή με αυτό το αναγνωριστικό και τον κωδικό πρόσβασης."),
+        ("Password", "Κωδικός πρόσβασης"),
+        ("Ready", "Έτοιμο"),
+        ("Established", "Συνδέθηκε"),
+        ("connecting_status", "Σύνδεση στο δίκτυο RustDesk..."),
+        ("Enable service", "Ενεργοποίηση υπηρεσίας"),
+        ("Start service", "Έναρξη υπηρεσίας"),
+        ("Service is running", "Η υπηρεσία εκτελείται"),
+        ("Service is not running", "Η υπηρεσία δεν εκτελείται"),
+        ("not_ready_status", "Δεν είναι έτοιμο. Ελέγξτε τη σύνδεσή σας στο δίκτυο"),
+        ("Control Remote Desktop", "Έλεγχος απομακρυσμένου σταθμού εργασίας"),
+        ("Transfer file", "Μεταφορά αρχείου"),
+        ("Connect", "Σύνδεση"),
+        ("Recent sessions", "Πρόσφατες συνεδρίες"),
+        ("Address book", "Βιβλίο διευθύνσεων"),
+        ("Confirmation", "Επιβεβαίωση"),
+        ("TCP tunneling", "TCP tunneling"),
+        ("Remove", "Κατάργηση"),
+        ("Refresh random password", "Νέος τυχαίος κωδικός πρόσβασης"),
+        ("Set your own password", "Ορίστε τον δικό σας κωδικό πρόσβασης"),
+        ("Enable keyboard/mouse", "Ενεργοποίηση πληκτρολογίου/ποντικιού"),
+        ("Enable clipboard", "Ενεργοποίηση προχείρου"),
+        ("Enable file transfer", "Ενεργοποίηση μεταφοράς αρχείων"),
+        ("Enable TCP tunneling", "Ενεργοποίηση TCP tunneling"),
+        ("IP Whitelisting", "Λίστα επιτρεπόμενων IP"),
+        ("ID/Relay Server", "Διακομιστής ID/Αναμετάδοσης"),
+        ("Import server config", "Εισαγωγή διαμόρφωσης διακομιστή"),
+        ("Export Server Config", "Εξαγωγή διαμόρφωσης διακομιστή"),
+        ("Import server configuration successfully", "Επιτυχής εισαγωγή διαμόρφωσης διακομιστή"),
+        ("Export server configuration successfully", "Επιτυχής εξαγωγή διαμόρφωσης διακομιστή"),
+        ("Invalid server configuration", "Μη έγκυρη διαμόρφωση διακομιστή"),
+        ("Clipboard is empty", "Το πρόχειρο είναι κενό"),
+        ("Stop service", "Διακοπή υπηρεσίας"),
+        ("Change ID", "Αλλαγή αναγνωριστικού ID"),
+        ("Your new ID", "Το νέο σας ID"),
+        ("length %min% to %max%", "μέγεθος από %min% έως %max%"),
+        ("starts with a letter", "ξεκινά με γράμμα"),
+        ("allowed characters", "επιτρεπόμενοι χαρακτήρες"),
+        ("id_change_tip", "Επιτρέπονται μόνο οι χαρακτήρες a-z, A-Z, 0-9, - (παύλα) και _ (κάτω παύλα). Το πρώτο γράμμα πρέπει να είναι a-z, A-Z και το μήκος πρέπει να είναι μεταξύ 6 και 16 χαρακτήρων."),
+        ("Website", "Ιστότοπος"),
+        ("About", "Πληροφορίες"),
+        ("Slogan_tip", "Φτιαγμένο με πάθος - σε έναν κόσμο που βυθίζεται στο χάος!"),
+        ("Privacy Statement", "Πολιτική απορρήτου"),
+        ("Mute", "Σίγαση"),
+        ("Build Date", "Ημερομηνία δημιουργίας"),
+        ("Version", "Έκδοση"),
+        ("Home", "Αρχική"),
+        ("Audio Input", "Είσοδος ήχου"),
+        ("Enhancements", "Βελτιώσεις"),
+        ("Hardware Codec", "Κωδικοποιητής υλικού"),
+        ("Adaptive bitrate", "Adaptive bitrate"),
+        ("ID Server", "Διακομιστής ID"),
+        ("Relay Server", "Διακομιστής αναμετάδοσης"),
+        ("API Server", "Διακομιστής API"),
+        ("invalid_http", "Πρέπει να ξεκινά με http:// ή https://"),
+        ("Invalid IP", "Μη έγκυρη διεύθυνση IP"),
+        ("Invalid format", "Μη έγκυρη μορφή"),
+        ("server_not_support", "Αυτή η δυνατότητα δεν υποστηρίζεται από τον διακομιστή"),
+        ("Not available", "Μη διαθέσιμο"),
+        ("Too frequent", "Πολύ συχνά"),
+        ("Cancel", "Ακύρωση"),
+        ("Skip", "Παράλειψη"),
+        ("Close", "Κλείσιμο"),
+        ("Retry", "Δοκίμασε ξανά"),
+        ("OK", "ΟΚ"),
+        ("Password Required", "Απαιτείται κωδικός πρόσβασης"),
+        ("Please enter your password", "Παρακαλώ εισάγετε τον κωδικό πρόσβασης"),
+        ("Remember password", "Απομνημόνευση κωδικού πρόσβασης"),
+        ("Wrong Password", "Λάθος κωδικός πρόσβασης"),
+        ("Do you want to enter again?", "Επανασύνδεση;"),
+        ("Connection Error", "Σφάλμα σύνδεσης"),
+        ("Error", "Σφάλμα"),
+        ("Reset by the peer", "Η σύνδεση επαναφέρθηκε από τον απομακρυσμένο σταθμό"),
+        ("Connecting...", "Σύνδεση..."),
+        ("Connection in progress. Please wait.", "Σύνδεση σε εξέλιξη. Παρακαλώ περιμένετε."),
+        ("Please try 1 minute later", "Παρακαλώ ξαναδοκιμάστε σε 1 λεπτό"),
+        ("Login Error", "Σφάλμα εισόδου"),
+        ("Successful", "Επιτυχής"),
+        ("Connected, waiting for image...", "Συνδέθηκε, αναμονή για εικόνα..."),
+        ("Name", "Όνομα"),
+        ("Type", "Τύπος"),
+        ("Modified", "Τροποποιήθηκε"),
+        ("Size", "Μέγεθος"),
+        ("Show Hidden Files", "Εμφάνιση κρυφών αρχείων"),
+        ("Receive", "Λήψη"),
+        ("Send", "Αποστολή"),
+        ("Refresh File", "Ανανέωση αρχείου"),
+        ("Local", "Τοπικό"),
+        ("Remote", "Απομακρυσμένο"),
+        ("Remote Computer", "Απομακρυσμένος υπολογιστής"),
+        ("Local Computer", "Τοπικός υπολογιστής"),
+        ("Confirm Delete", "Επιβεβαίωση διαγραφής"),
+        ("Delete", "Διαγραφή"),
+        ("Properties", "Ιδιότητες"),
+        ("Multi Select", "Πολλαπλή επιλογή"),
+        ("Select All", "Επιλογή όλων"),
+        ("Unselect All", "Κατάργηση επιλογής όλων"),
+        ("Empty Directory", "Κενός φάκελος"),
+        ("Not an empty directory", "Ο φάκελος δεν είναι κενός"),
+        ("Are you sure you want to delete this file?", "Είστε βέβαιοι ότι θέλετε να διαγράψετε αυτό το αρχείο;"),
+        ("Are you sure you want to delete this empty directory?", "Είστε βέβαιοι ότι θέλετε να διαγράψετε αυτόν τον κενό φάκελο;"),
+        ("Are you sure you want to delete the file of this directory?", "Είστε βέβαιοι ότι θέλετε να διαγράψετε το αρχείο αυτού του φακέλου;"),
+        ("Do this for all conflicts", "Κάνε αυτό για όλες τις διενέξεις"),
+        ("This is irreversible!", "Αυτό είναι μη αναστρέψιμο!"),
+        ("Deleting", "Διαγραφή"),
+        ("files", "αρχείων"),
+        ("Waiting", "Αναμονή"),
+        ("Finished", "Ολοκληρώθηκε"),
+        ("Speed", "Ταχύτητα"),
+        ("Custom Image Quality", "Προσαρμοσμένη ποιότητα εικόνας"),
+        ("Privacy mode", "Λειτουργία απορρήτου"),
+        ("Block user input", "Αποκλεισμός χειρισμού από τον χρήστη"),
+        ("Unblock user input", "Κατάργηση αποκλεισμού χειρισμού από τον χρήστη"),
+        ("Adjust Window", "Προσαρμογή παραθύρου"),
+        ("Original", "Πρωτότυπο"),
+        ("Shrink", "Συρρίκνωση"),
+        ("Stretch", "Προσαρμογή"),
+        ("Scrollbar", "Μπάρα κύλισης"),
+        ("ScrollAuto", "Αυτόματη κύλιση"),
+        ("Good image quality", "Καλή ποιότητα εικόνας"),
+        ("Balanced", "Ισορροπημένη"),
+        ("Optimize reaction time", "Βελτιστοποίηση απόκρισης"),
+        ("Custom", "Προσαρμοσμένη ποιότητας εικόνας"),
+        ("Show remote cursor", "Εμφάνιση απομακρυσμένου κέρσορα"),
+        ("Show quality monitor", "Εμφάνιση παρακολούθησης ποιότητας σύνδεσης"),
+        ("Disable clipboard", "Απενεργοποίηση προχείρου"),
+        ("Lock after session end", "Κλείδωμα μετά το τέλος της συνεδρίας"),
+        ("Insert Ctrl + Alt + Del", "Εισαγωγή Ctrl + Alt + Del"),
+        ("Insert Lock", "Κλείδωμα απομακρυσμένου σταθμού"),
+        ("Refresh", "Ανανέωση"),
+        ("ID does not exist", "Το αναγνωριστικό ID δεν υπάρχει"),
+        ("Failed to connect to rendezvous server", "Αποτυχία σύνδεσης με διακομιστή"),
+        ("Please try later", "Παρακαλώ δοκιμάστε αργότερα"),
+        ("Remote desktop is offline", "Ο απομακρυσμένος σταθμός εργασίας είναι εκτός σύνδεσης"),
+        ("Key mismatch", "Μη έγκυρο κλειδί"),
+        ("Timeout", "Τέλος χρόνου"),
+        ("Failed to connect to relay server", "Αποτυχία σύνδεσης με τον διακομιστή αναμετάδοσης"),
+        ("Failed to connect via rendezvous server", "Απέτυχε η σύνδεση μέσω διακομιστή"),
+        ("Failed to connect via relay server", "Απέτυχε η σύνδεση μέσω διακομιστή αναμετάδοσης"),
+        ("Failed to make direct connection to remote desktop", "Απέτυχε η απευθείας σύνδεση με τον απομακρυσμένο σταθμό εργασίας"),
+        ("Set Password", "Ορίστε κωδικό πρόσβασης"),
+        ("OS Password", "Κωδικός πρόσβασης λειτουργικού συστήματος"),
+        ("install_tip", "Λόγω UAC, το RustDesk ενδέχεται να μην λειτουργεί σωστά σε ορισμένες περιπτώσεις. Για να αποφύγετε το UAC, κάντε κλικ στο κουμπί παρακάτω για να εγκαταστήσετε το RustDesk στο σύστημα"),
+        ("Click to upgrade", "Αναβάθμιση τώρα"),
+        ("Configure", "Διαμόρφωση"),
+        ("config_acc", "Για τον απομακρυσμένο έλεγχο του υπολογιστή σας, πρέπει να εκχωρήσετε δικαιώματα πρόσβασης στο RustDesk."),
+        ("config_screen", "Για να αποκτήσετε απομακρυσμένη πρόσβαση στον υπολογιστή σας, πρέπει να εκχωρήσετε το δικαίωμα RustDesk \"Screen Capture\"."),
+        ("Installing ...", "Γίνεται εγκατάσταση ..."),
+        ("Install", "Εγκατάσταση"),
+        ("Installation", "Η εγκατάσταση"),
+        ("Installation Path", "Διαδρομή εγκατάστασης"),
+        ("Create start menu shortcuts", "Δημιουργία συντομεύσεων μενού έναρξης"),
+        ("Create desktop icon", "Δημιουργία εικονιδίου επιφάνειας εργασίας"),
+        ("agreement_tip", "Με την εγκατάσταση αποδέχεστε την άδεια χρήσης"),
+        ("Accept and Install", "Αποδοχή και εγκατάσταση"),
+        ("End-user license agreement", "Σύμβαση άδειας χρήσης τελικού χρήστη"),
+        ("Generating ...", "Δημιουργία ..."),
+        ("Your installation is lower version.", "Η έκδοση της εγκατάστασής σας είναι παλαιότερη."),
+        ("not_close_tcp_tip", "Μην κλείσετε αυτό το παράθυρο ενώ χρησιμοποιείτε το τούνελ."),
+        ("Listening ...", "Αναμονή ..."),
+        ("Remote Host", "Απομακρυσμένος υπολογιστής"),
+        ("Remote Port", "Απομακρυσμένη θύρα"),
+        ("Action", "Δράση"),
+        ("Add", "Προσθήκη"),
+        ("Local Port", "Τοπική θύρα"),
+        ("Local Address", "Τοπική διεύθυνση"),
+        ("Change Local Port", "Αλλαγή τοπικής θύρας"),
+        ("setup_server_tip", "Για πιο γρήγορη σύνδεση, ρυθμίστε τον δικό σας διακομιστή σύνδεσης"),
+        ("Too short, at least 6 characters.", "Πολύ μικρό, τουλάχιστον 6 χαρακτήρες."),
+        ("The confirmation is not identical.", "Η επιβεβαίωση δεν είναι πανομοιότυπη."),
+        ("Permissions", "Άδειες"),
+        ("Accept", "Αποδοχή"),
+        ("Dismiss", "Απόρριψη"),
+        ("Disconnect", "Αποσύνδεση"),
+        ("Enable file copy and paste", "Να επιτρέπεται η αντιγραφή και επικόλληση αρχείων"),
+        ("Connected", "Συνδεδεμένο"),
+        ("Direct and encrypted connection", "Άμεση και κρυπτογραφημένη σύνδεση"),
+        ("Relayed and encrypted connection", "Κρυπτογραφημένη σύνδεση με αναμετάδοση"),
+        ("Direct and unencrypted connection", "Άμεση και μη κρυπτογραφημένη σύνδεση"),
+        ("Relayed and unencrypted connection", "Μη κρυπτογραφημένη σύνδεση με αναμετάδοση"),
+        ("Enter Remote ID", "Εισαγωγή απομακρυσμένου ID"),
+        ("Enter your password", "Εισάγετε τον κωδικό σας"),
+        ("Logging in...", "Γίνεται σύνδεση..."),
+        ("Enable RDP session sharing", "Ενεργοποίηση κοινής χρήσης RDP"),
+        ("Auto Login", "Αυτόματη είσοδος"),
+        ("Enable direct IP access", "Ενεργοποίηση άμεσης πρόσβασης IP"),
+        ("Rename", "Μετονομασία"),
+        ("Space", "Χώρος"),
+        ("Create desktop shortcut", "Δημιουργία συντόμευσης στην επιφάνεια εργασίας"),
+        ("Change Path", "Αλλαγή διαδρομής δίσκου"),
+        ("Create Folder", "Δημιουργία φακέλου"),
+        ("Please enter the folder name", "Παρακαλώ εισάγετε το όνομα του φακέλου"),
+        ("Fix it", "Επιδιόρθωσε το"),
+        ("Warning", "Προειδοποίηση"),
+        ("Login screen using Wayland is not supported", "Η οθόνη εισόδου με χρήση του Wayland δεν υποστηρίζεται"),
+        ("Reboot required", "Απαιτείται επανεκκίνηση"),
+        ("Unsupported display server", "Μη υποστηριζόμενος διακομιστής εμφάνισης "),
+        ("x11 expected", "απαιτείται X11"),
+        ("Port", "Θύρα"),
+        ("Settings", "Ρυθμίσεις"),
+        ("Username", "Όνομα χρήστη"),
+        ("Invalid port", "Μη έγκυρη θύρα"),
+        ("Closed manually by the peer", "Έκλεισε από τον απομακρυσμένο σταθμό"),
+        ("Enable remote configuration modification", "Ενεργοποίηση απομακρυσμένης τροποποίησης ρυθμίσεων"),
+        ("Run without install", "Εκτέλεση χωρίς εγκατάσταση"),
+        ("Connect via relay", "Πραγματοποίηση σύνδεση μέσω αναμεταδότη"),
+        ("Always connect via relay", "Σύνδεση πάντα μέσω αναμεταδότη"),
+        ("whitelist_tip", "Μόνο οι IP της λίστας επιτρεπόμενων έχουν πρόσβαση"),
+        ("Login", "Σύνδεση"),
+        ("Verify", "Επαλήθευση"),
+        ("Remember me", "Να με θυμάσαι"),
+        ("Trust this device", "Εμπιστεύομαι αυτή την συσκευή"),
+        ("Verification code", "Κωδικός επαλήθευσης"),
+        ("verification_tip", "Εντοπίστηκε νέα συσκευή και εστάλη ένας κωδικός επαλήθευσης στην καταχωρισμένη διεύθυνση email. Εισαγάγετε τον κωδικό επαλήθευσης για να συνδεθείτε ξανά."),
+        ("Logout", "Αποσύνδεση"),
+        ("Tags", "Ετικέτες"),
+        ("Search ID", "Αναζήτηση ID"),
+        ("whitelist_sep", "Διαχωρίζονται με κόμμα, ερωτηματικό, διάστημα ή νέα γραμμή"),
+        ("Add ID", "Προσθήκη αναγνωριστικού ID"),
+        ("Add Tag", "Προσθήκη ετικέτας"),
+        ("Unselect all tags", "Κατάργηση επιλογής όλων των ετικετών"),
+        ("Network error", "Σφάλμα δικτύου"),
+        ("Username missed", "Δεν συμπληρώσατε το όνομα χρήστη"),
+        ("Password missed", "Δεν συμπληρώσατε τον κωδικό πρόσβασης"),
+        ("Wrong credentials", "Λάθος διαπιστευτήρια"),
+        ("The verification code is incorrect or has expired", ""),
+        ("Edit Tag", "Επεξεργασία ετικέτας"),
+        ("Forget Password", "Διαγραφή απομνημονευμένου κωδικού"),
+        ("Favorites", "Αγαπημένα"),
+        ("Add to Favorites", "Προσθήκη στα αγαπημένα"),
+        ("Remove from Favorites", "Κατάργηση από τα Αγαπημένα"),
+        ("Empty", "Άδειο"),
+        ("Invalid folder name", "Μη έγκυρο όνομα φακέλου"),
+        ("Socks5 Proxy", "Διαμεσολαβητής Socks5"),
+        ("Socks5/Http(s) Proxy", "Διαμεσολαβητής Socks5/Http(s)"),
+        ("Discovered", "Ανακαλύφθηκαν"),
+        ("install_daemon_tip", "Για να ξεκινά με την εκκίνηση του υπολογιστή, πρέπει να εγκαταστήσετε την υπηρεσία συστήματος"),
+        ("Remote ID", "Απομακρυσμένο ID"),
+        ("Paste", "Επικόλληση"),
+        ("Paste here?", "Επικόλληση εδώ;"),
+        ("Are you sure to close the connection?", "Είστε βέβαιοι ότι θέλετε να κλείσετε αυτήν τη σύνδεση;"),
+        ("Download new version", "Λήψη νέας έκδοσης"),
+        ("Touch mode", "Λειτουργία αφής"),
+        ("Mouse mode", "Λειτουργία ποντικιού"),
+        ("One-Finger Tap", "Πάτημα με ένα δάχτυλο"),
+        ("Left Mouse", "Αριστερό κλικ"),
+        ("One-Long Tap", "Παρατεταμένο πάτημα με ένα δάχτυλο"),
+        ("Two-Finger Tap", "Πάτημα με δύο δάχτυλα"),
+        ("Right Mouse", "Δεξί κλικ"),
+        ("One-Finger Move", "Κίνηση με ένα δάχτυλο"),
+        ("Double Tap & Move", "Διπλό πάτημα και μετακίνηση"),
+        ("Mouse Drag", "Σύρετε το ποντίκι"),
+        ("Three-Finger vertically", "Τρία δάχτυλα, κάθετα"),
+        ("Mouse Wheel", "Τροχός ποντικιού"),
+        ("Two-Finger Move", "Κίνηση με δύο δάχτυλα"),
+        ("Canvas Move", "Κίνηση καμβά"),
+        ("Pinch to Zoom", "Τσίμπημα για ζουμ"),
+        ("Canvas Zoom", "Ζουμ σε καμβά"),
+        ("Reset canvas", "Επαναφορά καμβά"),
+        ("No permission of file transfer", "Δεν υπάρχει άδεια για μεταφορά αρχείων"),
+        ("Note", "Σημείωση"),
+        ("Connection", "Σύνδεση"),
+        ("Share screen", "Κοινή χρήση οθόνης"),
+        ("Chat", "Κουβέντα"),
+        ("Total", "Σύνολο"),
+        ("items", "στοιχεία"),
+        ("Selected", "Επιλεγμένο"),
+        ("Screen Capture", "Αποτύπωση οθόνης"),
+        ("Input Control", "Έλεγχος εισόδου"),
+        ("Audio Capture", "Εγγραφή ήχου"),
+        ("Do you accept?", "Δέχεσαι;"),
+        ("Open System Setting", "Άνοιγμα ρυθμίσεων συστήματος"),
+        ("How to get Android input permission?", "Πώς να αποκτήσω άδεια εισαγωγής Android;"),
+        ("android_input_permission_tip1", "Για να μπορεί μία απομακρυσμένη συσκευή να ελέγχει τη συσκευή σας Android, πρέπει να επιτρέψετε στο RustDesk να χρησιμοποιεί την υπηρεσία \"Προσβασιμότητα\"."),
+        ("android_input_permission_tip2", "Παρακαλώ μεταβείτε στην επόμενη σελίδα ρυθμίσεων συστήματος, βρείτε και πληκτρολογήστε [Εγκατεστημένες υπηρεσίες], ενεργοποιήστε την υπηρεσία [Είσοδος RustDesk]."),
+        ("android_new_connection_tip", "θέλω να ελέγξω τη συσκευή σου."),
+        ("android_service_will_start_tip", "Η ενεργοποίηση της κοινής χρήσης οθόνης θα ξεκινήσει αυτόματα την υπηρεσία, ώστε άλλες συσκευές να μπορούν να ελέγχουν αυτήν τη συσκευή Android."),
+        ("android_stop_service_tip", "Η απενεργοποίηση της υπηρεσίας θα αποσυνδέσει αυτόματα όλες τις εγκατεστημένες συνδέσεις."),
+        ("android_version_audio_tip", "Η έκδοση Android που διαθέτετε δεν υποστηρίζει εγγραφή ήχου, ενημερώστε το σε Android 10 ή νεότερη έκδοση, εάν είναι δυνατόν."),
+        ("android_start_service_tip", ""),
+        ("android_permission_may_not_change_tip", ""),
+        ("Account", "Λογαριασμός"),
+        ("Overwrite", "Αντικατάσταση"),
+        ("This file exists, skip or overwrite this file?", "Αυτό το αρχείο υπάρχει, παράβλεψη ή αντικατάσταση αυτού του αρχείου;"),
+        ("Quit", "Έξοδος"),
+        ("Help", "Βοήθεια"),
+        ("Failed", "Απέτυχε"),
+        ("Succeeded", "Επιτυχής"),
+        ("Someone turns on privacy mode, exit", "Κάποιος ενεργοποιεί τη λειτουργία απορρήτου, έξοδος"),
+        ("Unsupported", "Δεν υποστηρίζεται"),
+        ("Peer denied", "Ο απομακρυσμένος σταθμός απέρριψε τη σύνδεση"),
+        ("Please install plugins", "Παρακαλώ εγκαταστήστε τα πρόσθετα"),
+        ("Peer exit", "Ο απομακρυσμένος σταθμός έχει αποσυνδεθεί"),
+        ("Failed to turn off", "Αποτυχία απενεργοποίησης"),
+        ("Turned off", "Απενεργοποιημένο"),
+        ("Language", "Γλώσσα"),
+        ("Keep RustDesk background service", "Εκτέλεση του RustDesk στο παρασκήνιο"),
+        ("Ignore Battery Optimizations", "Παράβλεψη βελτιστοποιήσεων μπαταρίας"),
+        ("android_open_battery_optimizations_tip", "Θέλετε να ανοίξετε τις ρυθμίσεις βελτιστοποίησης μπαταρίας;"),
+        ("Start on boot", "Έναρξη κατά την εκκίνηση"),
+        ("Start the screen sharing service on boot, requires special permissions", "Η έναρξη της υπηρεσίας κοινής χρήσης οθόνης κατά την εκκίνηση, απαιτεί ειδικά δικαιώματα"),
+        ("Connection not allowed", "Η σύνδεση δεν επιτρέπεται"),
+        ("Legacy mode", "Λειτουργία συμβατότητας"),
+        ("Map mode", "Λειτουργία χάρτη"),
+        ("Translate mode", "Λειτουργία μετάφρασης"),
+        ("Use permanent password", "Χρήση μόνιμου κωδικού πρόσβασης"),
+        ("Use both passwords", "Χρήση και των δύο κωδικών πρόσβασης"),
+        ("Set permanent password", "Ορισμός μόνιμου κωδικού πρόσβασης"),
+        ("Enable remote restart", "Ενεργοποίηση απομακρυσμένης επανεκκίνησης"),
+        ("Restart remote device", "Επανεκκίνηση απομακρυσμένης συσκευής"),
+        ("Are you sure you want to restart", "Είστε βέβαιοι ότι θέλετε να κάνετε επανεκκίνηση"),
+        ("Restarting remote device", "Γίνεται επανεκκίνηση της απομακρυσμένης συσκευής"),
+        ("remote_restarting_tip", "Η απομακρυσμένη συσκευή επανεκκινείται, κλείστε αυτό το μήνυμα και επανασυνδεθείτε χρησιμοποιώντας τον μόνιμο κωδικό πρόσβασης."),
+        ("Copied", "Αντιγράφηκε"),
+        ("Exit Fullscreen", "Έξοδος από πλήρη οθόνη"),
+        ("Fullscreen", "Πλήρης οθόνη"),
+        ("Mobile Actions", "Mobile Actions"),
+        ("Select Monitor", "Επιλογή οθόνης"),
+        ("Control Actions", "Ενέργειες ελέγχου"),
+        ("Display Settings", "Ρυθμίσεις οθόνης"),
+        ("Ratio", "Αναλογία"),
+        ("Image Quality", "Ποιότητα εικόνας"),
+        ("Scroll Style", "Στυλ κύλισης"),
+        ("Show Toolbar", "Εμφάνιση γραμμής εργαλείων"),
+        ("Hide Toolbar", "Απόκρυψη γραμμής εργαλείων"),
+        ("Direct Connection", "Απευθείας σύνδεση"),
+        ("Relay Connection", "Αναμεταδιδόμενη σύνδεση"),
+        ("Secure Connection", "Ασφαλής σύνδεση"),
+        ("Insecure Connection", "Μη ασφαλής σύνδεση"),
+        ("Scale original", "Κλιμάκωση πρωτότυπου"),
+        ("Scale adaptive", "Προσαρμοσμένη κλίμακα"),
+        ("General", "Γενικά"),
+        ("Security", "Ασφάλεια"),
+        ("Theme", "Θέμα"),
+        ("Dark Theme", "Σκούρο θέμα"),
+        ("Light Theme", "Φωτεινό θέμα"),
+        ("Dark", "Σκούρο"),
+        ("Light", "Φωτεινό"),
+        ("Follow System", "Από το σύστημα"),
+        ("Enable hardware codec", "Ενεργοποίηση κωδικοποιητή υλικού"),
+        ("Unlock Security Settings", "Ξεκλείδωμα ρυθμίσεων ασφαλείας"),
+        ("Enable audio", "Ενεργοποίηση ήχου"),
+        ("Unlock Network Settings", "Ξεκλείδωμα ρυθμίσεων δικτύου"),
+        ("Server", "Διακομιστής"),
+        ("Direct IP Access", "Πρόσβαση με χρήση IP"),
+        ("Proxy", "Διαμεσολαβητής"),
+        ("Apply", "Εφαρμογή"),
+        ("Disconnect all devices?", "Αποσύνδεση όλων των συσκευών;"),
+        ("Clear", "Καθαρισμός"),
+        ("Audio Input Device", "Συσκευή εισόδου ήχου"),
+        ("Use IP Whitelisting", "Χρήση λίστας επιτρεπόμενων IP"),
+        ("Network", "Δίκτυο"),
+        ("Pin Toolbar", "Καρφίτσωμα γραμμής εργαλείων"),
+        ("Unpin Toolbar", "Ξεκαρφίτσωμα γραμμής εργαλείων"),
+        ("Recording", "Εγγραφή"),
+        ("Directory", "Φάκελος εγγραφών"),
+        ("Automatically record incoming sessions", "Αυτόματη εγγραφή εισερχόμενων συνεδριών"),
+        ("Automatically record outgoing sessions", "Αυτόματη εγγραφή εξερχόμενων συνεδριών"),
+        ("Change", "Αλλαγή"),
+        ("Start session recording", "Έναρξη εγγραφής συνεδρίας"),
+        ("Stop session recording", "Διακοπή εγγραφής συνεδρίας"),
+        ("Enable recording session", "Ενεργοποίηση εγγραφής συνεδρίας"),
+        ("Enable LAN discovery", "Ενεργοποίηση εντοπισμού LAN"),
+        ("Deny LAN discovery", "Απαγόρευση εντοπισμού LAN"),
+        ("Write a message", "Γράψτε ένα μήνυμα"),
+        ("Prompt", "Υπενθυμίζω"),
+        ("Please wait for confirmation of UAC...", "Παρακαλώ περιμένετε για επιβεβαίωση του UAC..."),
+        ("elevated_foreground_window_tip", "Το τρέχον παράθυρο της απομακρυσμένης επιφάνειας εργασίας απαιτεί υψηλότερα δικαιώματα για να λειτουργήσει, επομένως δεν μπορεί να χρησιμοποιήσει προσωρινά το ποντίκι και το πληκτρολόγιο. Μπορείτε να ζητήσετε από τον απομακρυσμένο χρήστη να ελαχιστοποιήσει το τρέχον παράθυρο ή να κάνετε κλικ στο κουμπί ανύψωσης στο παράθυρο διαχείρισης σύνδεσης. Για να αποφύγετε αυτό το πρόβλημα, συνιστάται η εγκατάσταση του λογισμικού στην απομακρυσμένη συσκευή."),
+        ("Disconnected", "Αποσυνδέθηκε"),
+        ("Other", "Άλλα"),
+        ("Confirm before closing multiple tabs", "Επιβεβαίωση πριν κλείσετε πολλές καρτέλες"),
+        ("Keyboard Settings", "Ρυθμίσεις πληκτρολογίου"),
+        ("Full Access", "Πλήρης πρόσβαση"),
+        ("Screen Share", "Κοινή χρήση οθόνης"),
+        ("Wayland requires Ubuntu 21.04 or higher version.", "Το Wayland απαιτεί Ubuntu 21.04 ή νεότερη έκδοση."),
+        ("Wayland requires higher version of linux distro. Please try X11 desktop or change your OS.", "Το Wayland απαιτεί υψηλότερη έκδοση του linux distro. Δοκιμάστε την επιφάνεια εργασίας X11 ή αλλάξτε το λειτουργικό σας σύστημα."),
+        ("JumpLink", "Προβολή"),
+        ("Please Select the screen to be shared(Operate on the peer side).", "Επιλέξτε την οθόνη που θέλετε να μοιραστείτε (Λειτουργία στην πλευρά του απομακρυσμένου σταθμού)."),
+        ("Show RustDesk", "Εμφάνιση RustDesk"),
+        ("This PC", "Αυτός ο υπολογιστής"),
+        ("or", "ή"),
+        ("Continue with", "Συνέχεια με"),
+        ("Elevate", "Ανύψωση"),
+        ("Zoom cursor", "Kέρσορας μεγέθυνσης"),
+        ("Accept sessions via password", "Αποδοχή συνεδριών με κωδικό πρόσβασης"),
+        ("Accept sessions via click", "Αποδοχή συνεδριών με κλικ"),
+        ("Accept sessions via both", "Αποδοχή συνεδριών και με τα δύο"),
+        ("Please wait for the remote side to accept your session request...", "Παρακαλώ περιμένετε μέχρι η απομακρυσμένη πλευρά να αποδεχτεί το αίτημα συνεδρίας σας..."),
+        ("One-time Password", "Κωδικός μίας χρήσης"),
+        ("Use one-time password", "Χρήση κωδικού πρόσβασης μίας χρήσης"),
+        ("One-time password length", "Μήκος κωδικού πρόσβασης μίας χρήσης"),
+        ("Request access to your device", "Αίτημα πρόσβασης στη συσκευή σας"),
+        ("Hide connection management window", "Απόκρυψη παραθύρου διαχείρισης σύνδεσης"),
+        ("hide_cm_tip", "Να επιτρέπεται η απόκρυψη, μόνο εάν αποδέχεστε συνδέσεις μέσω κωδικού πρόσβασης και χρησιμοποιείτε μόνιμο κωδικό πρόσβασης"),
+        ("wayland_experiment_tip", "Η υποστήριξη Wayland βρίσκεται σε πειραματικό στάδιο, χρησιμοποιήστε το X11 εάν χρειάζεστε πρόσβαση χωρίς επίβλεψη."),
+        ("Right click to select tabs", "Κάντε δεξί κλικ για να επιλέξετε καρτέλες"),
+        ("Skipped", "Παράλειψη"),
+        ("Add to address book", "Προσθήκη στο Βιβλίο Διευθύνσεων"),
+        ("Group", "Ομάδα"),
+        ("Search", "Αναζήτηση"),
+        ("Closed manually by web console", "Κλειστό χειροκίνητα από την κονσόλα web"),
+        ("Local keyboard type", "Τύπος τοπικού πληκτρολογίου"),
+        ("Select local keyboard type", "Επιλογή τύπου τοπικού πληκτρολογίου"),
+        ("software_render_tip", "Εάν έχετε κάρτα γραφικών Nvidia και το παράθυρο σύνδεσης κλείνει αμέσως μετά τη σύνδεση, η εγκατάσταση του προγράμματος οδήγησης nouveau και η επιλογή χρήσης της επιτάχυνσης γραφικών μέσω λογισμικού μπορεί να βοηθήσει. Απαιτείται επανεκκίνηση."),
+        ("Always use software rendering", "Επιτάχυνση γραφικών μέσω λογισμικού"),
+        ("config_input", "Για να ελέγξετε την απομακρυσμένη επιφάνεια εργασίας με πληκτρολόγιο, πρέπει να εκχωρήσετε δικαιώματα στο RustDesk"),
+        ("config_microphone", "Ρύθμιση μικροφώνου"),
+        ("request_elevation_tip", "αίτημα ανύψωσης δικαιωμάτων χρήστη"),
+        ("Wait", "Περιμένετε"),
+        ("Elevation Error", "Σφάλμα ανύψωσης δικαιωμάτων χρήστη"),
+        ("Ask the remote user for authentication", "Ζητήστε από τον απομακρυσμένο χρήστη έλεγχο ταυτότητας"),
+        ("Choose this if the remote account is administrator", "Επιλέξτε αυτό εάν ο απομακρυσμένος λογαριασμός είναι διαχειριστής"),
+        ("Transmit the username and password of administrator", "Αποστολή του ονόματος χρήστη και του κωδικού πρόσβασης του διαχειριστή"),
+        ("still_click_uac_tip", "Εξακολουθεί να απαιτεί από τον απομακρυσμένο χρήστη να κάνει κλικ στο OK στο παράθυρο UAC όπου εκτελείται το RustDesk."),
+        ("Request Elevation", "Αίτημα ανύψωσης δικαιωμάτων χρήστη"),
+        ("wait_accept_uac_tip", "Περιμένετε να αποδεχτεί ο απομακρυσμένος χρήστης το παράθυρο διαλόγου UAC."),
+        ("Elevate successfully", "Επιτυχής ανύψωση δικαιωμάτων χρήστη"),
+        ("uppercase", "κεφαλαία γράμματα"),
+        ("lowercase", "πεζά γράμματα"),
+        ("digit", "αριθμός"),
+        ("special character", "ειδικός χαρακτήρας"),
+        ("length>=8", "μήκος>=8"),
+        ("Weak", "Αδύναμο"),
+        ("Medium", "Μέτριο"),
+        ("Strong", "Δυνατό"),
+        ("Switch Sides", "Εναλλαγή πλευράς"),
+        ("Please confirm if you want to share your desktop?", "Παρακαλώ επιβεβαιώστε αν επιθυμείτε την κοινή χρήση της επιφάνειας εργασίας;"),
+        ("Display", "Εμφάνιση"),
+        ("Default View Style", "Προκαθορισμένος τρόπος εμφάνισης"),
+        ("Default Scroll Style", "Προκαθορισμένος τρόπος κύλισης"),
+        ("Default Image Quality", "Προκαθορισμένη ποιότητα εικόνας"),
+        ("Default Codec", "Προκαθορισμένη κωδικοποίηση"),
+        ("Bitrate", "Bitrate"),
+        ("FPS", "FPS"),
+        ("Auto", "Αυτόματο"),
+        ("Other Default Options", "Άλλες προκαθορισμένες ρυθμίσεις"),
+        ("Voice call", "Φωνητική κλήση"),
+        ("Text chat", "Συνομιλία κειμένου"),
+        ("Stop voice call", "Διακοπή φωνητικής κλήσης"),
+        ("relay_hint_tip", "Εάν δεν είναι δυνατή η απευθείας σύνδεση, μπορείτε να δοκιμάσετε να συνδεθείτε μέσω διακομιστή αναμετάδοσης"),
+        ("Reconnect", "Επανασύνδεση"),
+        ("Codec", "Κωδικοποίηση"),
+        ("Resolution", "Ανάλυση"),
+        ("No transfers in progress", "Δεν υπάρχει μεταφορά σε εξέλιξη"),
+        ("Set one-time password length", "Μέγεθος κωδικού μιας χρήσης"),
+        ("RDP Settings", "Ρυθμίσεις RDP"),
+        ("Sort by", "Ταξινόμηση κατά"),
+        ("New Connection", "Νέα σύνδεση"),
+        ("Restore", "Επαναφορά"),
+        ("Minimize", "Ελαχιστοποίηση"),
+        ("Maximize", "Μεγιστοποίηση"),
+        ("Your Device", "Η συσκευή σας"),
+        ("empty_recent_tip", "Δεν υπάρχουν πρόσφατες συνεδρίες!\nΔοκιμάστε να ξεκινήσετε μια νέα."),
+        ("empty_favorite_tip", "Δεν υπάρχουν ακόμη αγαπημένες συνδέσεις;\nΑφού πραγματοποιήσετε σύνδεση με κάποιο απομακρυσμένο σταθμό, μπορείτε να τον προσθέσετε στα αγαπημένα σας!"),
+        ("empty_lan_tip", "Δεν έχουμε ανακαλυφθεί ακόμη απομακρυσμένοι σταθμοί."),
+        ("empty_address_book_tip", "Φαίνεται ότι αυτή τη στιγμή δεν υπάρχουν αγαπημένες συνδέσεις στο βιβλίο διευθύνσεών σας."),
+        ("Empty Username", "Κενό όνομα χρήστη"),
+        ("Empty Password", "Κενός κωδικός πρόσβασης"),
+        ("Me", "Εγώ"),
+        ("identical_file_tip", "Το αρχείο είναι πανομοιότυπο με αυτό του άλλου υπολογιστή."),
+        ("show_monitors_tip", "Εμφάνιση οθονών στη γραμμή εργαλείων"),
+        ("View Mode", "Λειτουργία προβολής"),
+        ("login_linux_tip", "Απαιτείται είσοδος σε απομακρυσμένο λογαριασμό Linux για την ενεργοποίηση του περιβάλλον εργασίας Χ."),
+        ("verify_rustdesk_password_tip", "Επιβεβαιώστε τον κωδικό του RustDesk"),
+        ("remember_account_tip", "Απομνημόνευση αυτού του λογαριασμού"),
+        ("os_account_desk_tip", "Αυτός ο λογαριασμός θα χρησιμοποιηθεί για την είσοδο και διαχείριση του απομακρυσμένου λειτουργικού συστήματος"),
+        ("OS Account", "Λογαριασμός λειτουργικού συστήματος"),
+        ("another_user_login_title_tip", "Υπάρχει ήδη άλλος συνδεδεμένος χρήστης"),
+        ("another_user_login_text_tip", "Αποσύνδεση"),
+        ("xorg_not_found_title_tip", "Δεν βρέθηκε το Xorg"),
+        ("xorg_not_found_text_tip", "Παρακαλώ εγκαταστήστε το Xorg"),
+        ("no_desktop_title_tip", "Δεν υπάρχει διαθέσιμη επιφάνεια εργασίας"),
+        ("no_desktop_text_tip", "Παρακαλώ εγκαταστήστε το περιβάλλον GNOME"),
+        ("No need to elevate", "Δεν χρειάζονται αυξημένα δικαιώματα"),
+        ("System Sound", "Ήχος συστήματος"),
+        ("Default", "Προκαθορισμένο"),
+        ("New RDP", "Νέα απομακρυσμένη σύνδεση"),
+        ("Fingerprint", ""),
+        ("Copy Fingerprint", ""),
+        ("no fingerprints", ""),
+        ("Select a peer", "Επιλέξτε σταθμό"),
+        ("Select peers", "Επιλέξτε σταθμούς"),
+        ("Plugins", "Επεκτάσεις"),
+        ("Uninstall", "Κατάργηση εγκατάστασης"),
+        ("Update", "Ενημέρωση"),
+        ("Enable", "Ενεργοποίηση"),
+        ("Disable", "Απενεργοποίηση"),
+        ("Options", "Επιλογές"),
+        ("resolution_original_tip", "Αρχική ανάλυση"),
+        ("resolution_fit_local_tip", "Προσαρμογή στην τοπική ανάλυση"),
+        ("resolution_custom_tip", "Προσαρμοσμένη ανάλυση"),
+        ("Collapse toolbar", "Εμφάνιση γραμμής εργαλείων"),
+        ("Accept and Elevate", "Αποδοχή με αυξημένα δικαιώματα"),
+        ("accept_and_elevate_btn_tooltip", "Αποδοχή της σύνδεσης με αυξημένα δικαιώματα χρήστη"),
+        ("clipboard_wait_response_timeout_tip", "Έληξε ο χρόνος αναμονής για την ανταπόκριση της αντιγραφής"),
+        ("Incoming connection", "Εισερχόμενη σύνδεση"),
+        ("Outgoing connection", "Εξερχόμενη σύνδεση"),
+        ("Exit", "Έξοδος"),
+        ("Open", "Άνοιγμα"),
+        ("logout_tip", "Είστε σίγουροι ότι θέλετε να αποσυνδεθείτε;"),
+        ("Service", "Υπηρεσία"),
+        ("Start", "Έναρξη"),
+        ("Stop", "Διακοπή"),
+        ("exceed_max_devices", "Υπέρβαση μέγιστου ορίου αποθηκευμένων συνδέσεων"),
+        ("Sync with recent sessions", "Συγχρονισμός των πρόσφατων συνεδριών"),
+        ("Sort tags", "Ταξινόμηση ετικετών"),
+        ("Open connection in new tab", "Άνοιγμα σύνδεσης σε νέα καρτέλα"),
+        ("Move tab to new window", "Μετακίνηση καρτέλας σε νέο παράθυρο"),
+        ("Can not be empty", "Δεν μπορεί να είναι κενό"),
+        ("Already exists", "Υπάρχει ήδη"),
+        ("Change Password", "Αλλαγή κωδικού"),
+        ("Refresh Password", "Ανανέωση κωδικού"),
+        ("ID", ""),
+        ("Grid View", "Προβολή σε πλακίδια"),
+        ("List View", "Προβολή σε λίστα"),
+        ("Select", "Επιλογή"),
+        ("Toggle Tags", "Εναλλαγή ετικετών"),
+        ("pull_ab_failed_tip", "Αποτυχία ανανέωσης βιβλίου διευθύνσεων"),
+        ("push_ab_failed_tip", "Αποτυχία συγχρονισμού βιβλίου διευθύνσεων"),
+        ("synced_peer_readded_tip", "Οι συσκευές των τρεχουσών συνεδριών θα συγχρονιστούν με το βιβλίο διευθύνσεων"),
+        ("Change Color", "Αλλαγή χρώματος"),
+        ("Primary Color", "Κυρίως χρώμα"),
+        ("HSV Color", "Χρώμα HSV"),
+        ("Installation Successful!", "Επιτυχής εγκατάσταση!"),
+        ("Installation failed!", "Αποτυχία εγκατάστασης!"),
+        ("Reverse mouse wheel", "Αντιστροφή τροχού ποντικιού"),
+        ("{} sessions", "{} συνεδρίες"),
+        ("scam_title", "Ίσως είστε θύμα ΑΠΑΤΗΣ!"),
+        ("scam_text1", "Αν σας καλέσει κάποιος τον οποίο ΔΕΝ γνωρίζεται και ΔΕΝ ΕΜΠΙΣΤΕΥΕΣΤΕ, και σας ζητήσει να ανοίξετε το RustDesk, και να του πείτε τα στοιχεία που εμφανίζει, ΜΗΝ συνεχίσετε και κλείστε το τηλέφωνο ΑΜΕΣΩΣ."),
+        ("scam_text2", "Πιθανόν είναι κάποιος απατεώνας ο οποίος προσπαθεί να αποσπάσει τα στοιχεία του τραπεζικού σας λογαριασμού, τα χρήματά σας και τις προσωπικές σας πληροφορίες."),
+        ("Don't show again", "Να μην εμφανιστεί ξανά"),
+        ("I Agree", "Συμφωνώ"),
+        ("Decline", "Διαφωνώ"),
+        ("Timeout in minutes", "Τέλος χρόνου σε λεπτά"),
+        ("auto_disconnect_option_tip", "Αυτόματη αποσύνδεση απομακρυσμένης συνεδρίας έπειτα από την πάροδο του χρονικού ορίου αδράνειας "),
+        ("Connection failed due to inactivity", "Η σύνδεση τερματίστηκε έπειτα από την πάροδο του χρόνου αδράνειας"),
+        ("Check for software update on startup", "Έλεγχος για ενημερώσεις κατα την εκκίνηση"),
+        ("upgrade_rustdesk_server_pro_to_{}_tip", "Παρακαλώ ενημερώστε τον RustDesk Server Pro στην έκδοση {} ή νεότερη!"),
+        ("pull_group_failed_tip", "Αποτυχία ανανέωσης της ομάδας"),
+        ("Filter by intersection", ""),
+        ("Remove wallpaper during incoming sessions", "Αφαίρεση εικόνας φόντου στις εισερχόμενες συνδέσεις"),
+        ("Test", "Δοκιμή"),
+        ("display_is_plugged_out_msg", "Η οθόνη έχει αποσυνδεθεί, επιστρέψτε στην κύρια οθόνη προβολής"),
+        ("No displays", "Δεν υπάρχουν οθόνες"),
+        ("Open in new window", "Άνοιγμα σε νέο παράθυρο"),
+        ("Show displays as individual windows", "Εμφάνιση οθονών σε ξεχωριστά παράθυρα"),
+        ("Use all my displays for the remote session", "Χρήση όλων των οθονών της απομακρυσμένης σύνδεσης"),
+        ("selinux_tip", "Έχετε ενεργοποιημένο το SELinux, το οποίο πιθανόν εμποδίζει την ορθή λειτουργία του RustDesk."),
+        ("Change view", "Αλλαγή απεικόνισης"),
+        ("Big tiles", "Μεγάλα εικονίδια"),
+        ("Small tiles", "Μικρά εικονίδια"),
+        ("List", "Λίστα"),
+        ("Virtual display", "Εινονική οθόνη"),
+        ("Plug out all", "Αποσύνδεση όλων"),
+        ("True color (4:4:4)", ""),
+        ("Enable blocking user input", "Ενεργοποίηση αποκλεισμού χειρισμού από τον χρήστη"),
+        ("id_input_tip", "Μπορείτε να εισάγετε ενα ID, μια διεύθυνση IP, ή ένα όνομα τομέα με την αντίστοιχη πόρτα (<domain>:<port>).\nΑν θέλετε να συνδεθείτε σε μια συσκευή σε άλλο διακομιστή, παρακαλώ να προσθέσετε και την διεύθυνση του διακομιστή (<id>@<server_address>?key=<key_value>), για παράδειγμα,\n9123456234@192.168.16.1:21117?key=5Qbwsde3unUcJBtrx9ZkvUmwFNoExHzpryHuPUdqlWM=.\nΑν θέλετε να συνδεθείτε σε κάποιο δημόσιο διακομιστή, προσθέστε το όνομά του \"<id>@public\", η παράμετρος key δεν απαιτείται για τους δημόσιους διακομιστές."),
+        ("privacy_mode_impl_mag_tip", "Προφύλαξη Οθόνης"),
+        ("privacy_mode_impl_virtual_display_tip", "Εικονική Οθόνη"),
+        ("Enter privacy mode", "Ενεργοποίηση λειτουργίας απορρήτου"),
+        ("Exit privacy mode", "Διακοπή λειτουργίας απορρήτου"),
+        ("idd_not_support_under_win10_2004_tip", "Το πρόγραμμα οδήγησης έμμεσης οθόνης δεν υποστηρίζεται. Απαιτείτε λειτουργικό σύστημα Windows 10 έκδοση 2004 ή νεότερο."),
+        ("input_source_1_tip", "Πηγή εισόδου 1"),
+        ("input_source_2_tip", "Πηγή εισόδου 2"),
+        ("Swap control-command key", "Εναλλαγή κουμπιών control-command"),
+        ("swap-left-right-mouse", "Εναλλαγή αριστερό-δεξί κουμπί του ποντικιού"),
+        ("2FA code", "κωδικός 2FA"),
+        ("More", "Περισσότερα"),
+        ("enable-2fa-title", "Ενεργοποίηση Πιστοποίησης Δύο Παραγόντων"),
+        ("enable-2fa-desc", "Ρυθμίστε τον έλεγχο ταυτότητας τώρα. Μπορείτε να χρησιμοποιήσετε μια εφαρμογή ελέγχου ταυτότητας όπως Authy, Microsoft ή Google Authenticator στο τηλέφωνο ή στην επιφάνεια εργασίας σας.Σαρώστε τον κωδικό QR με την εφαρμογή σας και εισαγάγετε τον κωδικό που εμφανίζει η εφαρμογή σας για να ενεργοποιήσετε τον έλεγχο ταυτότητας δύο παραγόντων."),
+        ("wrong-2fa-code", "Δεν είναι δυνατή η επαλήθευση του κωδικού. Ελέγξτε ότι ο κωδικός και οι ρυθμίσεις τοπικής ώρας είναι σωστές"),
+        ("enter-2fa-title", "Έλεγχος ταυτότητας δύο παραγόντων"),
+        ("Email verification code must be 6 characters.", "Ο κωδικός επαλήθευσης email πρέπει να είναι εως 6 χαρακτήρες"),
+        ("2FA code must be 6 digits.", "Ο κωδικός 2FA πρέπει να είναι 6ψήφιος."),
+        ("Multiple Windows sessions found", ""),
+        ("Please select the session you want to connect to", "Επιλέξτε τη συνεδρία στην οποία θέλετε να συνδεθείτε"),
+        ("powered_by_me", "Με την υποστήριξη της RustDesk"),
+        ("outgoing_only_desk_tip", ""),
+        ("preset_password_warning", "προειδοποίηση προκαθορισμένου κωδικού πρόσβασης"),
+        ("Security Alert", "Ειδοποίηση ασφαλείας"),
+        ("My address book", "Το βιβλίο διευθύνσεών μου"),
+        ("Personal", "Προσωπικό"),
+        ("Owner", "Ιδιοκτήτης"),
+        ("Set shared password", "Ορίστε κοινόχρηστο κωδικό πρόσβασης"),
+        ("Exist in", "Υπάρχει στο"),
+        ("Read-only", "Μόνο για ανάγνωση"),
+        ("Read/Write", "Ανάγνωση/Εγγραφή"),
+        ("Full Control", "Πλήρης Έλεγχος"),
+        ("share_warning_tip", "Τα παραπάνω πεδία είναι κοινόχρηστα και ορατά σε άλλους."),
+        ("Everyone", "Όλοι"),
+        ("ab_web_console_tip", "Περισσότερα στην κονσόλα web"),
+        ("allow-only-conn-window-open-tip", "Να επιτρέπεται η σύνδεση μόνο εάν το παράθυρο RustDesk είναι ανοιχτό"),
+        ("no_need_privacy_mode_no_physical_displays_tip", "Δεν υπάρχουν φυσικές οθόνες, δεν χρειάζεται να χρησιμοποιήσετε τη λειτουργία απορρήτου."),
+        ("Follow remote cursor", "Παρακολούθηση απομακρυσμένου κέρσορα"),
+        ("Follow remote window focus", "Παρακολούθηση απομακρυσμένου ενεργού παραθύρου"),
+        ("default_proxy_tip", "Προκαθορισμένο πρωτόκολλο Socks5 στην πόρτα 1080"),
+        ("no_audio_input_device_tip", "Δεν βρέθηκε συσκευή εισόδου ήχου."),
+        ("Incoming", "Εισερχόμενη"),
+        ("Outgoing", "Εξερχόμενη"),
+        ("Clear Wayland screen selection", ""),
+        ("clear_Wayland_screen_selection_tip", ""),
+        ("confirm_clear_Wayland_screen_selection_tip", ""),
+        ("android_new_voice_call_tip", ""),
+        ("texture_render_tip", ""),
+        ("Use texture rendering", ""),
+        ("Floating window", ""),
+        ("floating_window_tip", ""),
+        ("Keep screen on", "Διατήρηση οθόνης Ανοιχτή"),
+        ("Never", "Ποτέ"),
+        ("During controlled", "Κατα την διάρκεια απομακρυσμένου ελέγχου"),
+        ("During service is on", "Κατα την εκκίνηση της υπηρεσίας Rustdesk"),
+        ("Capture screen using DirectX", "Καταγραφή οθόνης με χρήση DirectX"),
+        ("Back", "Πίσω"),
+        ("Apps", "Εφαρμογές"),
+        ("Volume up", "Αύξηση έντασης"),
+        ("Volume down", "Μείωση έντασης"),
+        ("Power", ""),
+        ("Telegram bot", ""),
+        ("enable-bot-tip", "Εάν ενεργοποιήσετε αυτήν τη δυνατότητα, μπορείτε να λάβετε τον κωδικό 2FA από το bot σας. Μπορεί επίσης να λειτουργήσει ως ειδοποίηση σύνδεσης."),
+        ("enable-bot-desc", "1, Ανοίξτε μια συνομιλία με τον @BotFather., Στείλτε την εντολή \"/newbot\". Θα λάβετε ένα διακριτικό αφού ολοκληρώσετε αυτό το βήμα.3, Ξεκινήστε μια συνομιλία με το bot που μόλις δημιουργήσατε. Στείλτε ένα μήνυμα που αρχίζει με κάθετο (\"/\") όπως \"/hello\" για να το ενεργοποιήσετε."),
+        ("cancel-2fa-confirm-tip", "Είστε βέβαιοι ότι θέλετε να ακυρώσετε το 2FA;"),
+        ("cancel-bot-confirm-tip", "Είστε βέβαιοι ότι θέλετε να ακυρώσετε το Telegram bot;"),
+        ("About RustDesk", "Πληροφορίες για το RustDesk"),
+        ("Send clipboard keystrokes", "Αποστολή προχείρου με πλήκτρα συντόμευσης"),
+        ("network_error_tip", "Ελέγξτε τη σύνδεσή σας στο δίκτυο και, στη συνέχεια, κάντε κλικ στην επανάληψη."),
+        ("Unlock with PIN", "Ξεκλείδωμα με PIN"),
+        ("Requires at least {} characters", "Απαιτούνται τουλάχιστον {} χαρακτήρες"),
+        ("Wrong PIN", "Λάθος PIN"),
+        ("Set PIN", "Ορισμός PIN"),
+        ("Enable trusted devices", "Ενεργοποίηση αξιόπιστων συσκευών"),
+        ("Manage trusted devices", "Διαχείριση αξιόπιστων συσκευών"),
+        ("Platform", "Πλατφόρμα"),
+        ("Days remaining", "Ημέρες που απομένουν"),
+        ("enable-trusted-devices-tip", "Παράβλεψη επαλήθευσης 2FA σε αξιόπιστες συσκευές."),
+        ("Parent directory", "Γονικός φάκελος"),
+        ("Resume", "Συνέχεια"),
+        ("Invalid file name", "Μη έγκυρο όνομα αρχείου"),
+        ("one-way-file-transfer-tip", ""),
+        ("Authentication Required", "Απαιτείται έλεγχος ταυτότητας"),
+        ("Authenticate", "Πιστοποίηση"),
+        ("web_id_input_tip", ""),
+        ("Download", ""),
+        ("Upload folder", "Μεταφόρτωση φακέλου"),
+        ("Upload files", "Μεταφόρτωση αρχείων"),
+        ("Clipboard is synchronized", "Το πρόχειρο έχει συγχρονιστεί"),
+        ("Update client clipboard", "Ενημέρωση απομακρισμένου προχείρου"),
+        ("Untagged", "Χωρίς ετικέτα"),
+        ("new-version-of-{}-tip", "Υπάρχει διαθέσιμη νέα έκδοση του {}"),
+        ("Accessible devices", "Προσβάσιμες συσκευές"),
+        ("upgrade_remote_rustdesk_client_to_{}_tip", "Αναβαθμίστε τον πελάτη RustDesk στην έκδοση {} ή νεότερη στην απομακρυσμένη πλευρά!"),
+        ("d3d_render_tip", ""),
+        ("Use D3D rendering", ""),
+        ("Printer", ""),
+        ("printer-os-requirement-tip", ""),
+        ("printer-requires-installed-{}-client-tip", ""),
+        ("printer-{}-not-installed-tip", ""),
+        ("printer-{}-ready-tip", ""),
+        ("Install {} Printer", ""),
+        ("Outgoing Print Jobs", ""),
+        ("Incoming Print Jobs", ""),
+        ("Incoming Print Job", ""),
+        ("use-the-default-printer-tip", ""),
+        ("use-the-selected-printer-tip", ""),
+        ("auto-print-tip", ""),
+        ("print-incoming-job-confirm-tip", ""),
+        ("remote-printing-disallowed-tile-tip", ""),
+        ("remote-printing-disallowed-text-tip", ""),
+        ("save-settings-tip", ""),
+        ("dont-show-again-tip", ""),
+        ("Take screenshot", ""),
+        ("Taking screenshot", ""),
+        ("screenshot-merged-screen-not-supported-tip", ""),
+        ("screenshot-action-tip", ""),
+        ("Save as", ""),
+        ("Copy to clipboard", ""),
+        ("Enable remote printer", ""),
+        ("Downloading {}", ""),
+        ("{} Update", ""),
+        ("{}-to-update-tip", ""),
+        ("download-new-version-failed-tip", ""),
+        ("Auto update", ""),
+        ("update-failed-check-msi-tip", ""),
+        ("websocket_tip", ""),
+        ("Use WebSocket", ""),
+        ("Trackpad speed", ""),
+        ("Default trackpad speed", ""),
+        ("Numeric one-time password", ""),
+        ("Enable IPv6 P2P connection", ""),
+        ("Enable UDP hole punching", ""),
+        ("View camera", "Προβολή κάμερας"),
+        ("Enable camera", ""),
+        ("No cameras", ""),
+        ("view_camera_unsupported_tip", ""),
+        ("Terminal", ""),
+        ("Enable terminal", ""),
+        ("New tab", ""),
+        ("Keep terminal sessions on disconnect", ""),
+        ("Terminal (Run as administrator)", ""),
+        ("terminal-admin-login-tip", ""),
+        ("Failed to get user token.", ""),
+        ("Incorrect username or password.", ""),
+        ("The user is not an administrator.", ""),
+        ("Failed to check if the user is an administrator.", ""),
+        ("Supported only in the installed version.", ""),
+        ("elevation_username_tip", ""),
+        ("Preparing for installation ...", ""),
+        ("Show my cursor", ""),
+        ("Scale custom", ""),
+        ("Custom scale slider", ""),
+        ("Decrease", ""),
+        ("Increase", ""),
+        ("Show virtual mouse", ""),
+        ("Virtual mouse size", ""),
+        ("Small", ""),
+        ("Large", ""),
+        ("Show virtual joystick", ""),
+        ("Edit note", ""),
+        ("Alias", ""),
+        ("ScrollEdge", ""),
+        ("Allow insecure TLS fallback", ""),
+        ("allow-insecure-tls-fallback-tip", ""),
+        ("Disable UDP", ""),
+        ("disable-udp-tip", ""),
+        ("server-oss-not-support-tip", ""),
+        ("input note here", ""),
+        ("note-at-conn-end-tip", ""),
+        ("Show terminal extra keys", ""),
+        ("Relative mouse mode", ""),
+        ("rel-mouse-not-supported-peer-tip", ""),
+        ("rel-mouse-not-ready-tip", ""),
+        ("rel-mouse-lock-failed-tip", ""),
+        ("rel-mouse-exit-{}-tip", ""),
+        ("rel-mouse-permission-lost-tip", ""),
+        ("Changelog", ""),
+        ("keep-awake-during-outgoing-sessions-label", ""),
+        ("keep-awake-during-incoming-sessions-label", ""),
+    ].iter().cloned().collect();
 }

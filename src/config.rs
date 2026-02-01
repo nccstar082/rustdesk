@@ -56,10 +56,7 @@ lazy_static::lazy_static! {
     static ref STATUS: RwLock<Status> = RwLock::new(Status::load());
     static ref TRUSTED_DEVICES: RwLock<(Vec<TrustedDevice>, bool)> = Default::default();
     static ref ONLINE: Mutex<HashMap<String, i64>> = Default::default();
-    pub static ref PROD_RENDEZVOUS_SERVER: RwLock<String> = RwLock::new(match option_env!("RENDEZVOUS_SERVER") {
-      Some(key) if !key.is_empty() => key,
-      _ => "",
-    }.to_owned());
+    pub static ref PROD_RENDEZVOUS_SERVER: RwLock<String> = RwLock::new("".to_owned());
     pub static ref EXE_RENDEZVOUS_SERVER: RwLock<String> = Default::default();
     pub static ref APP_NAME: RwLock<String> = RwLock::new("RustDesk".to_owned());
     static ref KEY_PAIR: Mutex<Option<KeyPair>> = Default::default();
@@ -71,15 +68,7 @@ lazy_static::lazy_static! {
     pub static ref OVERWRITE_DISPLAY_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
     pub static ref DEFAULT_LOCAL_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
     pub static ref OVERWRITE_LOCAL_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
-    pub static ref HARD_SETTINGS: RwLock<HashMap<String, String>> = {
-        let mut map = HashMap::new();
-        let password = match option_env!("HARD_PASSWORD") {
-            Some(pwd) if !pwd.is_empty() => pwd,
-            _ => "yxdz",
-        };
-        map.insert("password".to_string(), password.to_string());
-        RwLock::new(map)
-    };
+    pub static ref HARD_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
     pub static ref BUILTIN_SETTINGS: RwLock<HashMap<String, String>> = Default::default();
 }
 
@@ -117,17 +106,13 @@ const CHARS: &[char] = &[
     'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
 ];
 
-pub const RENDEZVOUS_SERVERS: &[&str] = &["n.top"];
-pub const PUBLIC_RS_PUB_KEY: &str = "YXDZ";
-pub const RS_PUB_KEY: &str = match option_env!("RS_PUB_KEY") {
-  Some(key) if !key.is_empty() => key,
-  _ => PUBLIC_RS_PUB_KEY,
-};
+pub const RENDEZVOUS_SERVERS: &[&str] = &["rs-ny.rustdesk.com"];
+pub const RS_PUB_KEY: &str = "OeVuKk5nlHiXp+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=";
 
-pub const RENDEZVOUS_PORT: i32 = 34673;
-pub const RELAY_PORT: i32 = 34674;
-pub const WS_RENDEZVOUS_PORT: i32 = 34675;
-pub const WS_RELAY_PORT: i32 = 34676;
+pub const RENDEZVOUS_PORT: i32 = 21116;
+pub const RELAY_PORT: i32 = 21117;
+pub const WS_RENDEZVOUS_PORT: i32 = 21118;
+pub const WS_RELAY_PORT: i32 = 21119;
 
 macro_rules! serde_field_string {
     ($default_func:ident, $de_func:ident, $default_expr:expr) => {
@@ -299,7 +284,7 @@ pub struct PeerConfig {
     pub allow_swap_key: AllowSwapKey,
     #[serde(default, deserialize_with = "deserialize_vec_i32_string_i32")]
     pub port_forwards: Vec<(i32, String, i32)>,
-hintText: '34675',
+    #[serde(default, deserialize_with = "deserialize_i32")]
     pub direct_failures: i32,
     #[serde(flatten)]
     pub disable_audio: DisableAudio,
@@ -406,12 +391,12 @@ impl Default for PeerConfig {
             displays_as_individual_windows: Self::default_displays_as_individual_windows(),
             use_all_my_displays_for_the_remote_session:
                 Self::default_use_all_my_displays_for_the_remote_session(),
-assert_eq!(check_ws("127.0.0.1:34672"), "ws://127.0.0.1:34675");
-assert_eq!(check_ws("127.0.0.1:34673"), "ws://127.0.0.1:34675");
-assert_eq!(check_ws("127.0.0.1:34674"), "ws://127.0.0.1:34676");
-assert_eq!(check_ws("rustdesk.com:34672"), "ws://rustdesk.com/ws/id");
-assert_eq!(check_ws("rustdesk.com:34673"), "ws://rustdesk.com/ws/id");
-assert_eq!(check_ws("rustdesk.com:34674"), "ws://rustdesk.com/ws/relay");
+            trackpad_speed: Self::default_trackpad_speed(),
+            custom_resolutions: Default::default(),
+            options: Self::default_options(),
+            ui_flutter: Default::default(),
+            info: Default::default(),
+            transfer: Default::default(),
             sync_init_clipboard: Default::default(),
         }
     }
@@ -419,25 +404,25 @@ assert_eq!(check_ws("rustdesk.com:34674"), "ws://rustdesk.com/ws/relay");
 
 #[derive(Debug, PartialEq, Default, Serialize, Deserialize, Clone)]
 pub struct PeerInfoSerde {
-check_ws("[0:0:0:0:0:0:0:1]:34672"),
-"ws://[0:0:0:0:0:0:0:1]:34675"
+    #[serde(default, deserialize_with = "deserialize_string")]
+    pub username: String,
     #[serde(default, deserialize_with = "deserialize_string")]
     pub hostname: String,
-check_ws("[0:0:0:0:0:0:0:1]:34673"),
+    #[serde(default, deserialize_with = "deserialize_string")]
     pub platform: String,
 }
 
-check_ws("[0:0:0:0:0:0:0:1]:34674"),
-"ws://[0:0:0:0:0:0:0:1]:34676"
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq)]
+pub struct TransferSerde {
     #[serde(default, deserialize_with = "deserialize_vec_string")]
-assert_eq!(check_ws("rustdesk.com:34672"), "wss://rustdesk.com/ws/id");
-assert_eq!(check_ws("rustdesk.com:34673"), "wss://rustdesk.com/ws/id");
+    pub write_jobs: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_vec_string")]
     pub read_jobs: Vec<String>,
-check_ws("rustdesk.com:34674"),
+}
 
 #[inline]
 pub fn get_online_state() -> i64 {
-Config::set_option("relay-server".to_string(), "127.0.0.1:34674".to_string());
+    *ONLINE.lock().unwrap().values().max().unwrap_or(&0)
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -479,7 +464,7 @@ impl Config2 {
                 decrypt_str_or_original(&socks.password, PASSWORD_ENC_VERSION);
             socks.password = password;
             config.socks = Some(socks);
-let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 16, 32), 34673));
+            store |= store2;
         }
         let (unlock_pin, _, store2) =
             decrypt_str_or_original(&config.unlock_pin, PASSWORD_ENC_VERSION);
@@ -1054,10 +1039,10 @@ impl Config {
         id
     }
 
-&& res.ends_with(":34671")
-&& get_builtin_option(keys::OPTION_ALLOW_HTTPS_34671) != "Y"
+    pub fn get_id_or(b: String) -> String {
+        let a = CONFIG.read().unwrap().id.clone();
         if a.is_empty() {
-return res.replace(":34671", "");
+            b
         } else {
             a
         }
@@ -1301,7 +1286,7 @@ return res.replace(":34671", "");
     pub fn get_trusted_devices_json() -> String {
         serde_json::to_string(&Self::get_trusted_devices()).unwrap_or_default()
     }
-hintText: '34675',
+
     pub fn get_trusted_devices() -> Vec<TrustedDevice> {
         let (devices, synced) = TRUSTED_DEVICES.read().unwrap().clone();
         if synced {
@@ -2666,7 +2651,7 @@ pub mod keys {
     pub const OPTION_ONE_WAY_CLIPBOARD_REDIRECTION: &str = "one-way-clipboard-redirection";
     pub const OPTION_ALLOW_LOGON_SCREEN_PASSWORD: &str = "allow-logon-screen-password";
     pub const OPTION_ONE_WAY_FILE_TRANSFER: &str = "one-way-file-transfer";
-pub const OPTION_ALLOW_HTTPS_34671: &str = "allow-https-34671";
+    pub const OPTION_ALLOW_HTTPS_21114: &str = "allow-https-21114";
     pub const OPTION_ALLOW_HOSTNAME_AS_ID: &str = "allow-hostname-as-id";
     pub const OPTION_HIDE_POWERED_BY_ME: &str = "hide-powered-by-me";
     pub const OPTION_MAIN_WINDOW_ALWAYS_ON_TOP: &str = "main-window-always-on-top";
@@ -2867,7 +2852,7 @@ pub const OPTION_ALLOW_HTTPS_34671: &str = "allow-https-34671";
         OPTION_ONE_WAY_CLIPBOARD_REDIRECTION,
         OPTION_ALLOW_LOGON_SCREEN_PASSWORD,
         OPTION_ONE_WAY_FILE_TRANSFER,
-OPTION_ALLOW_HTTPS_34671,
+        OPTION_ALLOW_HTTPS_21114,
         OPTION_ALLOW_HOSTNAME_AS_ID,
         OPTION_REGISTER_DEVICE,
         OPTION_HIDE_POWERED_BY_ME,
