@@ -642,7 +642,7 @@ class _DesktopTabState extends State<DesktopTab>
                         Offstage(
                             offstage: !showTitle,
                             child: Text(
-                              buildTimestamp.isEmpty ? "RustDesk-1.4.5" : "RustDesk-1.4.5($buildTimestamp)",
+                              buildTimestamp.isEmpty ? "NccDesk-1.4.5" : "NccDesk-1.4.5($buildTimestamp)",
                               style: TextStyle(fontSize: 13),
                             ).marginOnly(left: 2))
                       ]).marginOnly(
