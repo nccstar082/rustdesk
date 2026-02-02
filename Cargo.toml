@@ -1,11 +1,11 @@
 [package]
-name = "nccdesk"
+name = "rustdesk"
 version = "1.4.5"
 authors = ["rustdesk <info@rustdesk.com>"]
 edition = "2021"
 build= "build.rs"
-description = "NccDesk Remote Desktop"
-default-run = "nccdesk"
+description = "RustDesk Remote Desktop"
+default-run = "rustdesk"
 rust-version = "1.75"
 
 [lib]
@@ -19,10 +19,6 @@ path = "src/naming.rs"
 [[bin]]
 name = "service"
 path = "src/service.rs"
-
-[[bin]]
-name = "nccdesk"
-path = "src/main.rs"
 
 [features]
 inline = []
@@ -218,9 +214,9 @@ libxdo-sys = { path = "libs/libxdo-sys-stub" }
 
 [package.metadata.winres]
 LegalCopyright = "Copyright © 2025 Purslane Ltd. All rights reserved."
-ProductName = "NccDesk"
-description = "NccDesk Remote Desktop"
-OriginalFilename = "nccdesk.exe"
+ProductName = "RustDesk"
+FileDescription = "RustDesk Remote Desktop"
+OriginalFilename = "rustdesk.exe"
 
 [target.'cfg(target_os="windows")'.build-dependencies]
 winres = "0.1"
@@ -236,7 +232,7 @@ hound = "3.5"
 docopt = "1.1"
 
 [package.metadata.bundle]
-name = "NccDesk"
+name = "RustDesk"
 identifier = "com.carriez.rustdesk"
 icon = ["res/32x32.png", "res/128x128.png", "res/128x128@2x.png"]
 osx_minimum_system_version = "10.14"
