@@ -4,7 +4,7 @@ version = "1.4.5"
 authors = ["rustdesk <info@rustdesk.com>"]
 edition = "2021"
 build= "build.rs"
-description = "NccDesk Remote Desktop"
+description = "RustDesk Remote Desktop"
 default-run = "rustdesk"
 rust-version = "1.75"
 
@@ -215,7 +215,7 @@ libxdo-sys = { path = "libs/libxdo-sys-stub" }
 [package.metadata.winres]
 LegalCopyright = "Copyright © 2025 Purslane Ltd. All rights reserved."
 ProductName = "RustDesk"
-FileDescription = "NccDesk Remote Desktop"
+FileDescription = "RustDesk Remote Desktop"
 OriginalFilename = "rustdesk.exe"
 
 [target.'cfg(target_os="windows")'.build-dependencies]

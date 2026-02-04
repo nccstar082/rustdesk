@@ -90,7 +90,6 @@ jobs:
         with:
           ref: ${{ matrix.job.ref }}
           submodules: recursive
-          token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
 
       - name: Import the codesign cert
         if: env.MACOS_P12_BASE64 != null

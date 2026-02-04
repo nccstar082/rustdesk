@@ -155,11 +155,8 @@ def make_parser():
 
 
 def get_build_timestamp():
-    from datetime import timedelta
-    now = datetime.utcnow() + timedelta(hours=8)
+    now = datetime.now()
     return now.strftime('%y%m%d%H%M')
-
-
 # Generate build script for docker
 #
 # it assumes all build dependencies are installed in environments

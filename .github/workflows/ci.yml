@@ -109,7 +109,6 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: recursive
-        token: ${{ secrets.PRIVATE_REPO_TOKEN || github.token }}
 
     - name: Install prerequisites
       shell: bash
