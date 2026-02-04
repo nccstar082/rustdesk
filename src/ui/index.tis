@@ -666,7 +666,7 @@ function editDirectAccessPort() {
     var p0 = handler.get_option('direct-access-port');
     var greyStyle = is_opt_fixed ? grey_text_style : "";
     var port = p0 ? <input|text style={greyStyle} name='port' value={p0} disabled={is_opt_fixed ? "true" : "false"} /> :
-                    <input|text style={greyStyle} name='port' novalue={34678} disabled={is_opt_fixed ? "true" : "false"} />;
+                    <input|text style={greyStyle} name='port' novalue={21118} disabled={is_opt_fixed ? "true" : "false"} />;
     var type_str = is_opt_fixed ? "custom-direct-access-port-nook" : "custom-direct-access-port";
     msgbox(type_str, translate('Direct IP Access Settings'), <div .form .set-password>
             <div><span style={"width: 60px;" + greyStyle}>{translate('Port')}:</span>{port}</div>

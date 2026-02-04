@@ -10,7 +10,6 @@ import hashlib
 import argparse
 import sys
 from pathlib import Path
-from datetime import datetime
 
 windows = platform.platform().startswith('Windows')
 osx = platform.platform().startswith(
@@ -154,9 +153,6 @@ def make_parser():
     return parser
 
 
-def get_build_timestamp():
-    now = datetime.now()
-    return now.strftime('%y%m%d%H%M')
 # Generate build script for docker
 #
 # it assumes all build dependencies are installed in environments
@@ -324,8 +320,7 @@ def build_flutter_deb(version, features):
         system2(f'cargo build --features {features} --lib --release')
         ffi_bindgen_function_refactor()
     os.chdir('flutter')
-    timestamp = get_build_timestamp()
-    system2(f'flutter build linux --release --dart-define=BUILD_TIMESTAMP={timestamp}')
+    system2('flutter build linux --release')
     system2('mkdir -p tmpdeb/usr/bin/')
     system2('mkdir -p tmpdeb/usr/share/rustdesk')
     system2('mkdir -p tmpdeb/etc/rustdesk/')
@@ -415,8 +410,7 @@ def build_flutter_dmg(version, features):
     system2(
         "cp target/release/liblibrustdesk.dylib target/release/librustdesk.dylib")
     os.chdir('flutter')
-    timestamp = get_build_timestamp()
-    system2(f'flutter build macos --release --dart-define=BUILD_TIMESTAMP={timestamp}')
+    system2('flutter build macos --release')
     system2('cp -rf ../target/release/service ./build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS/')
     '''
     system2(
@@ -431,8 +425,7 @@ def build_flutter_arch_manjaro(version, features):
         system2(f'cargo build --features {features} --lib --release')
     ffi_bindgen_function_refactor()
     os.chdir('flutter')
-    timestamp = get_build_timestamp()
-    system2(f'flutter build linux --release --dart-define=BUILD_TIMESTAMP={timestamp}')
+    system2('flutter build linux --release')
     system2(f'strip {flutter_build_dir}/lib/librustdesk.so')
     os.chdir('../res')
     system2('HBB=`pwd`/.. FLUTTER=1 makepkg -f')
@@ -445,8 +438,7 @@ def build_flutter_windows(version, features, skip_portable_pack):
             print("cargo build failed, please check rust source code.")
             exit(-1)
     os.chdir('flutter')
-    timestamp = get_build_timestamp()
-    system2(f'flutter build windows --release --dart-define=BUILD_TIMESTAMP={timestamp}')
+    system2('flutter build windows --release')
     os.chdir('..')
     shutil.copy2('target/release/deps/dylib_virtual_display.dll',
                  flutter_build_dir_2)
