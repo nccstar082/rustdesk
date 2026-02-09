@@ -65,7 +65,8 @@ impl RendezvousMediator {
         }
         crate::hbbs_http::sync::start();
         #[cfg(target_os = "windows")]
-        if crate::platform::is_installed() && crate::is_server() {
+        if crate::platform::is_installed() {
+            // 无论是否是服务器模式，都启动自动更新线程
             crate::updater::start_auto_update();
         }
         check_zombie();
