@@ -955,54 +955,111 @@ pub fn check_software_update() {
     });
     log::info!("=== 升级检查线程已启动 ===");
 }
+
 // No need to check `danger_accept_invalid_cert` for now.
 // Because the url is always `https://api.rustdesk.com/version/latest`.
 #[tokio::main(flavor = "current_thread")]
 pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
-    let (request, url) =
-        hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
+    log::info!("=== do_check_software_update 开始执行 ===");
+    
+    // 获取版本检查 URL
+    log::info!("获取版本检查请求参数");
+    let (request, url) = hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
+    log::info!("版本检查 URL: {}", url);
+    log::info!("版本检查请求: {:?}", request);
+    
+    // 准备网络请求
+    log::info!("准备网络请求");
     let proxy_conf = Config::get_socks();
+    log::info!("代理配置: {:?}", proxy_conf);
     let tls_url = get_url_for_tls(&url, &proxy_conf);
+    log::info!("TLS URL: {:?}", tls_url);
     let tls_type = get_cached_tls_type(tls_url);
     let is_tls_not_cached = tls_type.is_none();
     let tls_type = tls_type.unwrap_or(TlsType::Rustls);
+    log::info!("使用 TLS 类型: {:?}", tls_type);
+    
+    // 创建 HTTP 客户端
+    log::info!("创建 HTTP 客户端");
     let client = create_http_client_async(tls_type, false);
+    
+    // 发送网络请求
+    log::info!("发送版本检查请求");
     let latest_release_response = match client.post(&url).json(&request).send().await {
         Ok(resp) => {
+            log::info!("版本检查请求成功，状态码: {}", resp.status());
             upsert_tls_cache(tls_url, tls_type, false);
+            log::info!("更新 TLS 缓存成功");
             resp
         }
         Err(err) => {
+            log::error!("版本检查请求失败: {:?}", err);
             if is_tls_not_cached && err.is_request() {
+                log::info!("尝试使用 Native TLS 重新连接");
                 let tls_type = TlsType::NativeTls;
+                log::info!("使用 TLS 类型: {:?}", tls_type);
                 let client = create_http_client_async(tls_type, false);
+                log::info!("重新发送版本检查请求");
                 let resp = client.post(&url).json(&request).send().await?;
+                log::info!("版本检查请求成功，状态码: {}", resp.status());
                 upsert_tls_cache(tls_url, tls_type, false);
+                log::info!("更新 TLS 缓存成功");
                 resp
             } else {
+                log::error!("版本检查请求最终失败，返回错误");
                 return Err(err.into());
             }
         }
     };
+    
+    // 读取响应
+    log::info!("读取响应体");
     let bytes = latest_release_response.bytes().await?;
+    log::info!("响应体长度: {} 字节", bytes.len());
+    
+    // 解析响应
+    log::info!("解析响应体");
     let resp: hbb_common::VersionCheckResponse = serde_json::from_slice(&bytes)?;
+    log::info!("解析响应成功: {:?}", resp);
+    
+    // 提取版本信息
     let response_url = resp.url;
+    log::info!("最新版本下载 URL: {}", response_url);
     let latest_release_version = response_url.rsplit('/').next().unwrap_or_default();
-
-    if get_version_number(&latest_release_version) > get_version_number(crate::VERSION) {
+    log::info!("最新版本号: {}", latest_release_version);
+    log::info!("当前版本号: {}", crate::VERSION);
+    
+    // 比较版本
+    let latest_version_num = get_version_number(&latest_release_version);
+    let current_version_num = get_version_number(crate::VERSION);
+    log::info!("最新版本数值: {}", latest_version_num);
+    log::info!("当前版本数值: {}", current_version_num);
+    
+    if latest_version_num > current_version_num {
+        log::info!("发现新版本: {}", latest_release_version);
         #[cfg(feature = "flutter")]
         {
+            log::info!("发送 Flutter 事件通知新版本");
             let mut m = HashMap::new();
             m.insert("name", "check_software_update_finish");
             m.insert("url", &response_url);
             if let Ok(data) = serde_json::to_string(&m) {
+                log::info!("Flutter 事件数据: {}", data);
                 let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, data);
+                log::info!("Flutter 事件发送成功");
+            } else {
+                log::error!("Flutter 事件数据序列化失败");
             }
         }
         *SOFTWARE_UPDATE_URL.lock().unwrap() = response_url;
+        log::info!("更新 SOFTWARE_UPDATE_URL 成功: {}", response_url);
     } else {
+        log::info!("当前已是最新版本，无需更新");
         *SOFTWARE_UPDATE_URL.lock().unwrap() = "".to_string();
+        log::info!("清空 SOFTWARE_UPDATE_URL");
     }
+    
+    log::info!("=== do_check_software_update 执行完成 ===");
     Ok(())
 }
 
