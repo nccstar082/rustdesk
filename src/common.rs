@@ -940,15 +940,21 @@ pub fn is_modifier(evt: &KeyEvent) -> bool {
 }
 
 pub fn check_software_update() {
-    if is_custom_client() {
-        return;
-    }
-    let opt = LocalConfig::get_option(keys::OPTION_ENABLE_CHECK_UPDATE);
-    if config::option2bool(keys::OPTION_ENABLE_CHECK_UPDATE, &opt) {
-        std::thread::spawn(move || allow_err!(do_check_software_update()));
-    }
+//关闭检测自定义客户端不能升级检测
+//    if is_custom_client() {
+//        return;
+//    }
+    log::info!("=== 升级检查启动 ===");
+    // 强制执行升级检查，忽略用户设置
+    std::thread::spawn(move || {
+        log::info!("升级检查线程创建成功");
+        // 立即执行一次升级检查
+        let result = do_check_software_update();
+        log::info!("升级检查结果: {:?}", result);
+        allow_err!(result);
+    });
+    log::info!("=== 升级检查线程已启动 ===");
 }
-
 // No need to check `danger_accept_invalid_cert` for now.
 // Because the url is always `https://api.rustdesk.com/version/latest`.
 #[tokio::main(flavor = "current_thread")]
