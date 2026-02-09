@@ -1051,8 +1051,8 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
                 log::error!("Flutter 事件数据序列化失败");
             }
         }
-        *SOFTWARE_UPDATE_URL.lock().unwrap() = response_url;
         log::info!("更新 SOFTWARE_UPDATE_URL 成功: {}", response_url);
+        *SOFTWARE_UPDATE_URL.lock().unwrap() = response_url;
     } else {
         log::info!("当前已是最新版本，无需更新");
         *SOFTWARE_UPDATE_URL.lock().unwrap() = "".to_string();
