@@ -1983,7 +1983,7 @@ pub fn get_builtin_option(key: &str) -> String {
 
 #[inline]
 pub fn is_custom_client() -> bool {
-    get_app_name() != "RustDesk"
+    false // 总是返回 false，确保自动更新逻辑不会被跳过
 }
 
 pub fn verify_login(_raw: &str, _id: &str) -> bool {
