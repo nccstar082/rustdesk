@@ -82,8 +82,7 @@ fn start_auto_update_check() -> Sender<UpdateMsg> {
 }
 
 fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
-    // 减少初始延迟时间，从 30 秒改为 5 秒
-    std::thread::sleep(Duration::from_secs(5));
+    std::thread::sleep(Duration::from_secs(30));
     if let Err(e) = check_update(false) {
         log::error!("Error checking for updates: {}", e);
     }
@@ -121,42 +120,32 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
 fn check_update(manually: bool) -> ResultType<()> {
     #[cfg(target_os = "windows")]
     let is_msi = crate::platform::is_msi_installed()?;
-    // 检查自动更新选项，如果未设置则默认启用
-    let allow_auto_update = config::Config::get_option(config::keys::OPTION_ALLOW_AUTO_UPDATE);
-    let should_update = manually || allow_auto_update.is_empty() || config::Config::get_bool_option(config::keys::OPTION_ALLOW_AUTO_UPDATE);
-    if !should_update {
-        log::info!("自动更新已禁用");
+    if !(manually || config::Config::get_bool_option(config::keys::OPTION_ALLOW_AUTO_UPDATE)) {
         return Ok(());
     }
-    log::info!("执行升级检查");
     if !do_check_software_update().is_ok() {
         // ignore
-        log::info!("升级检查执行失败，忽略错误");
         return Ok(());
     }
 
     let update_url = crate::common::SOFTWARE_UPDATE_URL.lock().unwrap().clone();
     if update_url.is_empty() {
-        log::info!("No update available.");
+        log::debug!("No update available.");
     } else {
         let download_url = update_url.replace("tag", "download");
         let version = download_url.split('/').last().unwrap_or_default();
-        // 使用动态获取的应用名称，而不是硬编码的 "rustdesk"
-        let app_name = crate::get_app_name().to_lowercase();
         #[cfg(target_os = "windows")]
         let download_url = if cfg!(feature = "flutter") {
             format!(
-                "{}/{}-{}-x86_64.{}",
+                "{}/rustdesk-{}-x86_64.{}",
                 download_url,
-                app_name,
                 version,
                 if is_msi { "msi" } else { "exe" }
             )
         } else {
-            format!("{}/{}-{}-x86-sciter.exe", download_url, app_name, version)
+            format!("{}/rustdesk-{}-x86-sciter.exe", download_url, version)
         };
-        log::info!("New version available: {}", &version);
-        log::info!("Download URL: {}", download_url);
+        log::debug!("New version available: {}", &version);
         let client = create_http_client_with_url(&download_url);
         let Some(file_path) = get_download_file_from_url(&download_url) else {
             bail!("Failed to get the file path from the URL: {}", download_url);

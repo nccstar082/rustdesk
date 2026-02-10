@@ -3933,17 +3933,18 @@ void earlyAssert() {
 
 void checkUpdate() {
   if (!isWeb) {
-    // 移除对自定义客户端的检查，让自定义客户端也能处理自动更新事件
-    platformFFI.registerEventHandler(
-        kCheckSoftwareUpdateFinish, kCheckSoftwareUpdateFinish,
-        (Map<String, dynamic> evt) async {
-      if (evt['url'] is String) {
-        stateGlobal.updateUrl.value = evt['url'];
-      }
-    });
-    Timer(const Duration(seconds: 1), () async {
-      bind.mainGetSoftwareUpdateUrl();
-    });
+    if (!bind.isCustomClient()) {
+      platformFFI.registerEventHandler(
+          kCheckSoftwareUpdateFinish, kCheckSoftwareUpdateFinish,
+          (Map<String, dynamic> evt) async {
+        if (evt['url'] is String) {
+          stateGlobal.updateUrl.value = evt['url'];
+        }
+      });
+      Timer(const Duration(seconds: 1), () async {
+        bind.mainGetSoftwareUpdateUrl();
+      });
+    }
   }
 }
 

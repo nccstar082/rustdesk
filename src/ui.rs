@@ -100,10 +100,9 @@ pub fn start(args: &mut [String]) {
             .to_owned();
         args[1] = id;
     }
-    // 无论软件以什么模式启动，都执行自动更新检查
-    crate::common::check_software_update();
     if args.is_empty() {
         std::thread::spawn(move || check_zombie());
+        crate::common::check_software_update();
         frame.event_handler(UI {});
         frame.sciter_handler(UIHostHandler {});
         page = "index.html";
