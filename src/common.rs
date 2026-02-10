@@ -1,4114 +1,2582 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:math';
+use std::{
+    collections::HashMap,
+    future::Future,
+    net::{SocketAddr, ToSocketAddrs},
+    sync::{Arc, Mutex, RwLock},
+    task::Poll,
+};
 
-import 'package:back_button_interceptor/back_button_interceptor.dart';
-import 'package:desktop_multi_window/desktop_multi_window.dart';
-import 'package:flutter/foundation.dart';
-import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_hbb/common/formatter/id_formatter.dart';
-import 'package:flutter_hbb/desktop/widgets/refresh_wrapper.dart';
-import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
-import 'package:flutter_hbb/main.dart';
-import 'package:flutter_hbb/models/peer_model.dart';
-import 'package:flutter_hbb/models/peer_tab_model.dart';
-import 'package:flutter_hbb/models/state_model.dart';
-import 'package:flutter_hbb/utils/multi_window_manager.dart';
-import 'package:flutter_hbb/utils/platform_channel.dart';
-import 'package:flutter_svg/flutter_svg.dart';
-import 'package:get/get.dart';
-import 'package:get/get_rx/src/rx_workers/utils/debouncer.dart';
-import 'package:provider/provider.dart';
-import 'package:uni_links/uni_links.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:uuid/uuid.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
-import 'package:window_manager/window_manager.dart';
-import 'package:window_size/window_size.dart' as window_size;
+use serde_json::{json, Map, Value};
 
-import '../consts.dart';
-import 'common/widgets/overlay.dart';
-import 'mobile/pages/file_manager_page.dart';
-import 'mobile/pages/remote_page.dart';
-import 'mobile/pages/view_camera_page.dart';
-import 'mobile/pages/terminal_page.dart';
-import 'desktop/pages/remote_page.dart' as desktop_remote;
-import 'desktop/pages/file_manager_page.dart' as desktop_file_manager;
-import 'desktop/pages/view_camera_page.dart' as desktop_view_camera;
-import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
-import 'models/model.dart';
-import 'models/platform_model.dart';
+#[cfg(not(target_os = "ios"))]
+use hbb_common::whoami;
+use hbb_common::{
+    allow_err,
+    anyhow::{anyhow, Context},
+    async_recursion::async_recursion,
+    bail, base64,
+    bytes::Bytes,
+    config::{
+        self, keys, use_ws, Config, LocalConfig, CONNECT_TIMEOUT, READ_TIMEOUT, RENDEZVOUS_PORT,
+    },
+    futures::future::join_all,
+    futures_util::future::poll_fn,
+    get_version_number, log,
+    message_proto::*,
+    protobuf::{Enum, Message as _},
+    rendezvous_proto::*,
+    socket_client,
+    sodiumoxide::crypto::{box_, secretbox, sign},
+    timeout,
+    tls::{get_cached_tls_accept_invalid_cert, get_cached_tls_type, upsert_tls_cache, TlsType},
+    tokio::{
+        self,
+        net::UdpSocket,
+        time::{Duration, Instant, Interval},
+    },
+    ResultType, Stream,
+};
 
-import 'package:flutter_hbb/native/win32.dart'
-    if (dart.library.html) 'package:flutter_hbb/web/win32.dart';
-import 'package:flutter_hbb/native/common.dart'
-    if (dart.library.html) 'package:flutter_hbb/web/common.dart';
-import 'package:flutter_hbb/utils/http_service.dart' as http;
+use crate::{
+    hbbs_http::{create_http_client_async, get_url_for_tls},
+    ui_interface::{get_option, set_option},
+};
 
-final globalKey = GlobalKey<NavigatorState>();
-final navigationBarKey = GlobalKey();
-
-final isAndroid = isAndroid_;
-final isIOS = isIOS_;
-final isWindows = isWindows_;
-final isMacOS = isMacOS_;
-final isLinux = isLinux_;
-final isDesktop = isDesktop_;
-final isWeb = isWeb_;
-final isWebDesktop = isWebDesktop_;
-final isWebOnWindows = isWebOnWindows_;
-final isWebOnLinux = isWebOnLinux_;
-final isWebOnMacOs = isWebOnMacOS_;
-var isMobile = isAndroid || isIOS;
-var version = '';
-int androidVersion = 0;
-
-// Only used on Linux.
-// `windowManager.setResizable(false)` will reset the window size to the default size on Linux.
-// https://stackoverflow.com/questions/8193613/gtk-window-resize-disable-without-going-back-to-default
-// So we need to use this flag to enable/disable resizable.
-bool _linuxWindowResizable = true;
-
-// Only used on Windows(window manager).
-bool _ignoreDevicePixelRatio = true;
-
-/// only available for Windows target
-int windowsBuildNumber = 0;
-DesktopType? desktopType;
-
-// Tolerance used for floating-point position comparisons to avoid precision errors.
-const double _kPositionEpsilon = 1e-6;
-
-bool get isMainDesktopWindow =>
-    desktopType == DesktopType.main || desktopType == DesktopType.cm;
-
-String get screenInfo => screenInfo_;
-
-/// Check if the app is running with single view mode.
-bool isSingleViewApp() {
-  return desktopType == DesktopType.cm;
+#[derive(Debug, Eq, PartialEq)]
+pub enum GrabState {
+    Ready,
+    Run,
+    Wait,
+    Exit,
 }
 
-/// * debug or test only, DO NOT enable in release build
-bool isTest = false;
+pub type NotifyMessageBox = fn(String, String, String, String) -> dyn Future<Output = ()>;
 
-typedef F = String Function(String);
-typedef FMethod = String Function(String, dynamic);
+// the executable name of the portable version
+pub const PORTABLE_APPNAME_RUNTIME_ENV_KEY: &str = "RUSTDESK_APPNAME";
 
-typedef StreamEventHandler = Future<void> Function(Map<String, dynamic>);
-typedef SessionID = UuidValue;
-final iconHardDrive = MemoryImage(Uint8List.fromList(base64Decode(
-    'iVBORw0KGgoAAAANSUhEUgAAAMgAAADICAMAAACahl6sAAAAmVBMVEUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAjHWqVAAAAMnRSTlMAv0BmzLJNXlhiUu2fxXDgu7WuSUUe29LJvpqUjX53VTstD7ilNujCqTEk5IYH+vEoFjKvAagAAAPpSURBVHja7d0JbhpBEIXhB3jYzb5vBgzYgO04df/DJXGUKMwU9ECmZ6pQfSfw028LCXW3YYwxxhhjjDHGGGOM0eZ9VV1MckdKWLM1bRQ/35GW/WxHHu1me6ShuyHvNl34VhlTKsYVeDWj1EzgUZ1S1DrAk/UDparZgxd9Sl0BHnxSBhpI3jfKQG2FpLUpE69I2ILikv1nsvygjBwPSNKYMlNHggqUoSKS80AZCnwHqQ1zCRvW+CRegwRFeFAMKKrtM8gTPJlzSfwFgT9dJom3IDN4VGaSeAryAK8m0SSeghTg1ZYiql6CjBDhO8mzlyAVhKhIwgXxrh5NojGIhyRckEdwpCdhgpSQgiWTRGMQNonGIGySp0SDvMDBX5KWxiB8Eo1BgE00SYJBykhNnkmSWJAcLpGaJNMgfJKyxiDAK4WNEwryhMtkJsk8CJtEYxA+icYgQIfCcgkEqcJNXhIRQdgkGoPwSTQG+e8khdu/7JOVREwQIKCwF41B2CQljUH4JLcH6SI+OUlEBQHa0SQag/BJNAbhkjxqDMIn0RgEeI4muSlID9eSkERgEKAVTaIxCJ9EYxA2ydVB8hCASVLRGAQYR5NoDMIn0RgEyFHYSGMQPonGII4kziCNvBgNJonEk4u3GAk8Sprk6eYaqbMDY0oKvUm5jfC/viGiSypV7+M3i2iDsAGpNEDYjlTa3W8RdR/r544g50ilnA0RxoZIE2NIXqQbhkAkGyKNDZHGhkhjQ6SxIdLYEGlsiDQ2JGTVeD0264U9zipPh7XOooffpA6pfNCXjxl4/c3pUzlChwzor53zwYYVfpI5pOV6LWFF/2jiJ5FDSs5jdY/0rwUAkUMeXWdBqnSqD0DikBqdqCHsjTvELm9In0IOri/0pwAEDtlSyNaRjAIAAoesKWTtuusxByBwCJp0oomwBXcYUuCQgE50ENajE4OvZAKHLB1/68Br5NqiyCGYOY8YRd77kTkEb64n7lZN+mOIX4QOwb5FX0ZVx3uOxwW+SB0CbBubemWP8/rlaaeRX+M3uUOuZENsiA25zIbYkPsZElBIHwL13U/PTjJ/cyOOEoVM3I+hziDQlELm7pPxw3eI8/7gPh1fpLA6xGnEeDDgO0UcIAzzM35HxLPIq5SXe9BLzOsj9eUaQqyXzxS1QFSfWM2cCANiHcAISJ0AnCKpUwTuIkkA3EeSInAXSQKcs1V18e24wlllUmQp9v9zXKeHi+akRAMOPVKhAqdPBZeUmnnEsO6QcJ0+4qmOSbBxFfGVRiTUqITrdKcCbyYO3/K4wX4+aQ+FfNjXhu3JfAVjjDHGGGOMMcYYY4xIPwCgfqT6TbhCLAAAAABJRU5ErkJggg==')));
+pub const PLATFORM_WINDOWS: &str = "Windows";
+pub const PLATFORM_LINUX: &str = "Linux";
+pub const PLATFORM_MACOS: &str = "Mac OS";
+pub const PLATFORM_ANDROID: &str = "Android";
 
-enum DesktopType {
-  main,
-  remote,
-  fileTransfer,
-  viewCamera,
-  terminal,
-  cm,
-  portForward,
+pub const TIMER_OUT: Duration = Duration::from_secs(1);
+pub const DEFAULT_KEEP_ALIVE: i32 = 60_000;
+
+const MIN_VER_MULTI_UI_SESSION: &str = "1.2.4";
+
+pub mod input {
+    pub const MOUSE_TYPE_MOVE: i32 = 0;
+    pub const MOUSE_TYPE_DOWN: i32 = 1;
+    pub const MOUSE_TYPE_UP: i32 = 2;
+    pub const MOUSE_TYPE_WHEEL: i32 = 3;
+    pub const MOUSE_TYPE_TRACKPAD: i32 = 4;
+    /// Relative mouse movement type for gaming/3D applications.
+    /// This type sends delta (dx, dy) values instead of absolute coordinates.
+    /// NOTE: This is only supported by the Flutter client. The Sciter client (deprecated)
+    /// does not support relative mouse mode due to:
+    /// 1. Fixed send_mouse() function signature that doesn't allow type differentiation
+    /// 2. Lack of pointer lock API in Sciter/TIS
+    /// 3. No OS cursor control (hide/show/clip) FFI bindings in Sciter UI
+    pub const MOUSE_TYPE_MOVE_RELATIVE: i32 = 5;
+
+    /// Mask to extract the mouse event type from the mask field.
+    /// The lower 3 bits contain the event type (MOUSE_TYPE_*), giving a valid range of 0-7.
+    /// Currently defined types use values 0-5; values 6 and 7 are reserved for future use.
+    pub const MOUSE_TYPE_MASK: i32 = 0x7;
+
+    pub const MOUSE_BUTTON_LEFT: i32 = 0x01;
+    pub const MOUSE_BUTTON_RIGHT: i32 = 0x02;
+    pub const MOUSE_BUTTON_WHEEL: i32 = 0x04;
+    pub const MOUSE_BUTTON_BACK: i32 = 0x08;
+    pub const MOUSE_BUTTON_FORWARD: i32 = 0x10;
 }
 
-bool isDoubleEqual(double a, double b) {
-  return (a - b).abs() < _kPositionEpsilon;
+lazy_static::lazy_static! {
+    pub static ref SOFTWARE_UPDATE_URL: Arc<Mutex<String>> = Default::default();
+    pub static ref DEVICE_ID: Arc<Mutex<String>> = Default::default();
+    pub static ref DEVICE_NAME: Arc<Mutex<String>> = Default::default();
+    static ref PUBLIC_IPV6_ADDR: Arc<Mutex<(Option<SocketAddr>, Option<Instant>)>> = Default::default();
 }
 
-class IconFont {
-  static const _family1 = 'Tabbar';
-  static const _family2 = 'PeerSearchbar';
-  static const _family3 = 'AddressBook';
-  static const _family4 = 'DeviceGroup';
-  static const _family5 = 'More';
-
-  IconFont._();
-
-  static const IconData max = IconData(0xe606, fontFamily: _family1);
-  static const IconData restore = IconData(0xe607, fontFamily: _family1);
-  static const IconData close = IconData(0xe668, fontFamily: _family1);
-  static const IconData min = IconData(0xe609, fontFamily: _family1);
-  static const IconData add = IconData(0xe664, fontFamily: _family1);
-  static const IconData menu = IconData(0xe628, fontFamily: _family1);
-  static const IconData search = IconData(0xe6a4, fontFamily: _family2);
-  static const IconData roundClose = IconData(0xe6ed, fontFamily: _family2);
-  static const IconData addressBook = IconData(0xe602, fontFamily: _family3);
-  static const IconData deviceGroupOutline =
-      IconData(0xe623, fontFamily: _family4);
-  static const IconData deviceGroupFill =
-      IconData(0xe748, fontFamily: _family4);
-  static const IconData more = IconData(0xe609, fontFamily: _family5);
+lazy_static::lazy_static! {
+    // Is server process, with "--server" args
+    static ref IS_SERVER: bool = std::env::args().nth(1) == Some("--server".to_owned());
+    // Is server logic running. The server code can invoked to run by the main process if --server is not running.
+    static ref SERVER_RUNNING: Arc<RwLock<bool>> = Default::default();
+    static ref IS_MAIN: bool = std::env::args().nth(1).map_or(true, |arg| !arg.starts_with("--"));
+    static ref IS_CM: bool = std::env::args().nth(1) == Some("--cm".to_owned()) || std::env::args().nth(1) == Some("--cm-no-ui".to_owned());
 }
 
-class ColorThemeExtension extends ThemeExtension<ColorThemeExtension> {
-  const ColorThemeExtension({
-    required this.border,
-    required this.border2,
-    required this.border3,
-    required this.highlight,
-    required this.drag_indicator,
-    required this.shadow,
-    required this.errorBannerBg,
-    required this.me,
-    required this.toastBg,
-    required this.toastText,
-    required this.divider,
-  });
+pub struct SimpleCallOnReturn {
+    pub b: bool,
+    pub f: Box<dyn Fn() + Send + 'static>,
+}
 
-  final Color? border;
-  final Color? border2;
-  final Color? border3;
-  final Color? highlight;
-  final Color? drag_indicator;
-  final Color? shadow;
-  final Color? errorBannerBg;
-  final Color? me;
-  final Color? toastBg;
-  final Color? toastText;
-  final Color? divider;
-
-  static final light = ColorThemeExtension(
-    border: Color(0xFFCCCCCC),
-    border2: Color(0xFFBBBBBB),
-    border3: Colors.black26,
-    highlight: Color(0xFFE5E5E5),
-    drag_indicator: Colors.grey[800],
-    shadow: Colors.black,
-    errorBannerBg: Color(0xFFFDEEEB),
-    me: Colors.green,
-    toastBg: Colors.black.withOpacity(0.6),
-    toastText: Colors.white,
-    divider: Colors.black38,
-  );
-
-  static final dark = ColorThemeExtension(
-    border: Color(0xFF555555),
-    border2: Color(0xFFE5E5E5),
-    border3: Colors.white24,
-    highlight: Color(0xFF3F3F3F),
-    drag_indicator: Colors.grey,
-    shadow: Colors.grey,
-    errorBannerBg: Color(0xFF470F2D),
-    me: Colors.greenAccent,
-    toastBg: Colors.white.withOpacity(0.6),
-    toastText: Colors.black,
-    divider: Colors.white38,
-  );
-
-  @override
-  ThemeExtension<ColorThemeExtension> copyWith({
-    Color? border,
-    Color? border2,
-    Color? border3,
-    Color? highlight,
-    Color? drag_indicator,
-    Color? shadow,
-    Color? errorBannerBg,
-    Color? me,
-    Color? toastBg,
-    Color? toastText,
-    Color? divider,
-  }) {
-    return ColorThemeExtension(
-      border: border ?? this.border,
-      border2: border2 ?? this.border2,
-      border3: border3 ?? this.border3,
-      highlight: highlight ?? this.highlight,
-      drag_indicator: drag_indicator ?? this.drag_indicator,
-      shadow: shadow ?? this.shadow,
-      errorBannerBg: errorBannerBg ?? this.errorBannerBg,
-      me: me ?? this.me,
-      toastBg: toastBg ?? this.toastBg,
-      toastText: toastText ?? this.toastText,
-      divider: divider ?? this.divider,
-    );
-  }
-
-  @override
-  ThemeExtension<ColorThemeExtension> lerp(
-      ThemeExtension<ColorThemeExtension>? other, double t) {
-    if (other is! ColorThemeExtension) {
-      return this;
+impl Drop for SimpleCallOnReturn {
+    fn drop(&mut self) {
+        if self.b {
+            (self.f)();
+        }
     }
-    return ColorThemeExtension(
-      border: Color.lerp(border, other.border, t),
-      border2: Color.lerp(border2, other.border2, t),
-      border3: Color.lerp(border3, other.border3, t),
-      highlight: Color.lerp(highlight, other.highlight, t),
-      drag_indicator: Color.lerp(drag_indicator, other.drag_indicator, t),
-      shadow: Color.lerp(shadow, other.shadow, t),
-      errorBannerBg: Color.lerp(shadow, other.errorBannerBg, t),
-      me: Color.lerp(shadow, other.me, t),
-      toastBg: Color.lerp(shadow, other.toastBg, t),
-      toastText: Color.lerp(shadow, other.toastText, t),
-      divider: Color.lerp(shadow, other.divider, t),
-    );
-  }
 }
 
-class MyTheme {
-  MyTheme._();
-
-  static const Color grayBg = Color(0xFFEFEFF2);
-  static const Color accent = Color(0xFF0071FF);
-  static const Color accent50 = Color(0x770071FF);
-  static const Color accent80 = Color(0xAA0071FF);
-  static const Color canvasColor = Color(0xFF212121);
-  static const Color border = Color(0xFFCCCCCC);
-  static const Color idColor = Color(0xFF00B6F0);
-  static const Color darkGray = Color.fromARGB(255, 148, 148, 148);
-  static const Color cmIdColor = Color(0xFF21790B);
-  static const Color dark = Colors.black87;
-  static const Color button = Color(0xFF2C8CFF);
-  static const Color hoverBorder = Color(0xFF999999);
-
-  // ListTile
-  static const ListTileThemeData listTileTheme = ListTileThemeData(
-    shape: RoundedRectangleBorder(
-      borderRadius: BorderRadius.all(
-        Radius.circular(5),
-      ),
-    ),
-  );
-
-  static SwitchThemeData switchTheme() {
-    return SwitchThemeData(
-        splashRadius: (isDesktop || isWebDesktop) ? 0 : kRadialReactionRadius);
-  }
-
-  static RadioThemeData radioTheme() {
-    return RadioThemeData(
-        splashRadius: (isDesktop || isWebDesktop) ? 0 : kRadialReactionRadius);
-  }
-
-  // Checkbox
-  static const CheckboxThemeData checkboxTheme = CheckboxThemeData(
-    splashRadius: 0,
-    shape: RoundedRectangleBorder(
-      borderRadius: BorderRadius.all(
-        Radius.circular(5),
-      ),
-    ),
-  );
-
-  // TextButton
-  // Value is used to calculate "dialog.actionsPadding"
-  static const double mobileTextButtonPaddingLR = 20;
-
-  // TextButton on mobile needs a fixed padding, otherwise small buttons
-  // like "OK" has a larger left/right padding.
-  static TextButtonThemeData mobileTextButtonTheme = TextButtonThemeData(
-    style: TextButton.styleFrom(
-      padding: EdgeInsets.symmetric(horizontal: mobileTextButtonPaddingLR),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8.0),
-      ),
-    ),
-  );
-
-  //tooltip
-  static TooltipThemeData tooltipTheme() {
-    return TooltipThemeData(
-      waitDuration: Duration(seconds: 1, milliseconds: 500),
-    );
-  }
-
-  // Dialogs
-  static const double dialogPadding = 24;
-
-  // padding bottom depends on content (some dialogs has no content)
-  static EdgeInsets dialogTitlePadding({bool content = true}) {
-    final double p = dialogPadding;
-
-    return EdgeInsets.fromLTRB(p, p, p, content ? 0 : p);
-  }
-
-  // padding bottom depends on actions (mobile has dialogs without actions)
-  static EdgeInsets dialogContentPadding({bool actions = true}) {
-    final double p = dialogPadding;
-
-    return (isDesktop || isWebDesktop)
-        ? EdgeInsets.fromLTRB(p, p, p, actions ? (p - 4) : p)
-        : EdgeInsets.fromLTRB(p, p, p, actions ? (p / 2) : p);
-  }
-
-  static EdgeInsets dialogActionsPadding() {
-    final double p = dialogPadding;
-
-    return (isDesktop || isWebDesktop)
-        ? EdgeInsets.fromLTRB(p, 0, p, (p - 4))
-        : EdgeInsets.fromLTRB(p, 0, (p - mobileTextButtonPaddingLR), (p / 2));
-  }
-
-  static EdgeInsets dialogButtonPadding = (isDesktop || isWebDesktop)
-      ? EdgeInsets.only(left: dialogPadding)
-      : EdgeInsets.only(left: dialogPadding / 3);
-
-  static ScrollbarThemeData scrollbarTheme = ScrollbarThemeData(
-    thickness: MaterialStateProperty.all(6),
-    thumbColor: MaterialStateProperty.resolveWith<Color?>((states) {
-      if (states.contains(MaterialState.dragged)) {
-        return Colors.grey[900];
-      } else if (states.contains(MaterialState.hovered)) {
-        return Colors.grey[700];
-      } else {
-        return Colors.grey[500];
-      }
-    }),
-    crossAxisMargin: 4,
-  );
-
-  static ScrollbarThemeData scrollbarThemeDark = scrollbarTheme.copyWith(
-    thumbColor: MaterialStateProperty.resolveWith<Color?>((states) {
-      if (states.contains(MaterialState.dragged)) {
-        return Colors.grey[100];
-      } else if (states.contains(MaterialState.hovered)) {
-        return Colors.grey[300];
-      } else {
-        return Colors.grey[500];
-      }
-    }),
-  );
-
-  static ThemeData lightTheme = ThemeData(
-    // https://stackoverflow.com/questions/77537315/after-upgrading-to-flutter-3-16-the-app-bar-background-color-button-size-and
-    useMaterial3: false,
-    brightness: Brightness.light,
-    hoverColor: Color.fromARGB(255, 224, 224, 224),
-    scaffoldBackgroundColor: Colors.white,
-    dialogBackgroundColor: Colors.white,
-    appBarTheme: AppBarTheme(
-      shadowColor: Colors.transparent,
-    ),
-    dialogTheme: DialogTheme(
-      elevation: 15,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(18.0),
-        side: BorderSide(
-          width: 1,
-          color: grayBg,
-        ),
-      ),
-    ),
-    scrollbarTheme: scrollbarTheme,
-    inputDecorationTheme: isDesktop
-        ? InputDecorationTheme(
-            fillColor: grayBg,
-            filled: true,
-            isDense: true,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-          )
-        : null,
-    textTheme: const TextTheme(
-        titleLarge: TextStyle(fontSize: 19, color: Colors.black87),
-        titleSmall: TextStyle(fontSize: 14, color: Colors.black87),
-        bodySmall: TextStyle(fontSize: 12, color: Colors.black87, height: 1.25),
-        bodyMedium:
-            TextStyle(fontSize: 14, color: Colors.black87, height: 1.25),
-        labelLarge: TextStyle(fontSize: 16.0, color: MyTheme.accent80)),
-    cardColor: grayBg,
-    hintColor: Color(0xFFAAAAAA),
-    visualDensity: VisualDensity.adaptivePlatformDensity,
-    tabBarTheme: const TabBarTheme(
-      labelColor: Colors.black87,
-    ),
-    tooltipTheme: tooltipTheme(),
-    splashColor: (isDesktop || isWebDesktop) ? Colors.transparent : null,
-    highlightColor: (isDesktop || isWebDesktop) ? Colors.transparent : null,
-    splashFactory: (isDesktop || isWebDesktop) ? NoSplash.splashFactory : null,
-    textButtonTheme: (isDesktop || isWebDesktop)
-        ? TextButtonThemeData(
-            style: TextButton.styleFrom(
-              splashFactory: NoSplash.splashFactory,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(18.0),
-              ),
-            ),
-          )
-        : mobileTextButtonTheme,
-    elevatedButtonTheme: ElevatedButtonThemeData(
-      style: ElevatedButton.styleFrom(
-        backgroundColor: MyTheme.accent,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8.0),
-        ),
-      ),
-    ),
-    outlinedButtonTheme: OutlinedButtonThemeData(
-      style: OutlinedButton.styleFrom(
-        backgroundColor: grayBg,
-        foregroundColor: Colors.black87,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8.0),
-        ),
-      ),
-    ),
-    switchTheme: switchTheme(),
-    radioTheme: radioTheme(),
-    checkboxTheme: checkboxTheme,
-    listTileTheme: listTileTheme,
-    menuBarTheme: MenuBarThemeData(
-        style:
-            MenuStyle(backgroundColor: MaterialStatePropertyAll(Colors.white))),
-    colorScheme: ColorScheme.light(
-        primary: Colors.blue, secondary: accent, background: grayBg),
-    popupMenuTheme: PopupMenuThemeData(
-        color: Colors.white,
-        shape: RoundedRectangleBorder(
-          side: BorderSide(
-              color: (isDesktop || isWebDesktop)
-                  ? Color(0xFFECECEC)
-                  : Colors.transparent),
-          borderRadius: BorderRadius.all(Radius.circular(8.0)),
-        )),
-  ).copyWith(
-    extensions: <ThemeExtension<dynamic>>[
-      ColorThemeExtension.light,
-      TabbarTheme.light,
-    ],
-  );
-  static ThemeData darkTheme = ThemeData(
-    useMaterial3: false,
-    brightness: Brightness.dark,
-    hoverColor: Color.fromARGB(255, 45, 46, 53),
-    scaffoldBackgroundColor: Color(0xFF18191E),
-    dialogBackgroundColor: Color(0xFF18191E),
-    appBarTheme: AppBarTheme(
-      shadowColor: Colors.transparent,
-    ),
-    dialogTheme: DialogTheme(
-      elevation: 15,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(18.0),
-        side: BorderSide(
-          width: 1,
-          color: Color(0xFF24252B),
-        ),
-      ),
-    ),
-    scrollbarTheme: scrollbarThemeDark,
-    inputDecorationTheme: (isDesktop || isWebDesktop)
-        ? InputDecorationTheme(
-            fillColor: Color(0xFF24252B),
-            filled: true,
-            isDense: true,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-          )
-        : null,
-    textTheme: const TextTheme(
-      titleLarge: TextStyle(fontSize: 19),
-      titleSmall: TextStyle(fontSize: 14),
-      bodySmall: TextStyle(fontSize: 12, height: 1.25),
-      bodyMedium: TextStyle(fontSize: 14, height: 1.25),
-      labelLarge: TextStyle(
-        fontSize: 16.0,
-        fontWeight: FontWeight.bold,
-        color: accent80,
-      ),
-    ),
-    cardColor: Color(0xFF24252B),
-    visualDensity: VisualDensity.adaptivePlatformDensity,
-    tabBarTheme: const TabBarTheme(
-      labelColor: Colors.white70,
-    ),
-    tooltipTheme: tooltipTheme(),
-    splashColor: (isDesktop || isWebDesktop) ? Colors.transparent : null,
-    highlightColor: (isDesktop || isWebDesktop) ? Colors.transparent : null,
-    splashFactory: (isDesktop || isWebDesktop) ? NoSplash.splashFactory : null,
-    textButtonTheme: (isDesktop || isWebDesktop)
-        ? TextButtonThemeData(
-            style: TextButton.styleFrom(
-              splashFactory: NoSplash.splashFactory,
-              disabledForegroundColor: Colors.white70,
-              foregroundColor: Colors.white70,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(18.0),
-              ),
-            ),
-          )
-        : mobileTextButtonTheme,
-    elevatedButtonTheme: ElevatedButtonThemeData(
-      style: ElevatedButton.styleFrom(
-        backgroundColor: MyTheme.accent,
-        foregroundColor: Colors.white,
-        disabledForegroundColor: Colors.white70,
-        disabledBackgroundColor: Colors.white10,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8.0),
-        ),
-      ),
-    ),
-    outlinedButtonTheme: OutlinedButtonThemeData(
-      style: OutlinedButton.styleFrom(
-        backgroundColor: Color(0xFF24252B),
-        side: BorderSide(color: Colors.white12, width: 0.5),
-        disabledForegroundColor: Colors.white70,
-        foregroundColor: Colors.white70,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8.0),
-        ),
-      ),
-    ),
-    switchTheme: switchTheme(),
-    radioTheme: radioTheme(),
-    checkboxTheme: checkboxTheme,
-    listTileTheme: listTileTheme,
-    menuBarTheme: MenuBarThemeData(
-        style: MenuStyle(
-            backgroundColor: MaterialStatePropertyAll(Color(0xFF121212)))),
-    colorScheme: ColorScheme.dark(
-      primary: Colors.blue,
-      secondary: accent,
-      background: Color(0xFF24252B),
-    ),
-    popupMenuTheme: PopupMenuThemeData(
-        shape: RoundedRectangleBorder(
-      side: BorderSide(color: Colors.white24),
-      borderRadius: BorderRadius.all(Radius.circular(8.0)),
-    )),
-  ).copyWith(
-    extensions: <ThemeExtension<dynamic>>[
-      ColorThemeExtension.dark,
-      TabbarTheme.dark,
-    ],
-  );
-
-  static ThemeMode getThemeModePreference() {
-    return themeModeFromString(bind.mainGetLocalOption(key: kCommConfKeyTheme));
-  }
-
-  static Future<void> changeDarkMode(ThemeMode mode) async {
-    Get.changeThemeMode(mode);
-    if (desktopType == DesktopType.main || isAndroid || isIOS || isWeb) {
-      if (mode == ThemeMode.system) {
-        await bind.mainSetLocalOption(
-            key: kCommConfKeyTheme, value: defaultOptionTheme);
-      } else {
-        await bind.mainSetLocalOption(
-            key: kCommConfKeyTheme, value: mode.toShortString());
-      }
-      if (!isWeb) await bind.mainChangeTheme(dark: mode.toShortString());
-      // Synchronize the window theme of the system.
-      updateSystemWindowTheme();
+pub fn global_init() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if !crate::platform::linux::is_x11() {
+            crate::server::wayland::init();
+        }
     }
-  }
+    true
+}
 
-  static ThemeMode currentThemeMode() {
-    final preference = getThemeModePreference();
-    if (preference == ThemeMode.system) {
-      if (WidgetsBinding.instance.platformDispatcher.platformBrightness ==
-          Brightness.light) {
-        return ThemeMode.light;
-      } else {
-        return ThemeMode.dark;
-      }
+pub fn global_clean() {}
+
+#[inline]
+pub fn set_server_running(b: bool) {
+    *SERVER_RUNNING.write().unwrap() = b;
+}
+
+#[inline]
+pub fn is_support_multi_ui_session(ver: &str) -> bool {
+    is_support_multi_ui_session_num(hbb_common::get_version_number(ver))
+}
+
+#[inline]
+pub fn is_support_multi_ui_session_num(ver: i64) -> bool {
+    ver >= hbb_common::get_version_number(MIN_VER_MULTI_UI_SESSION)
+}
+
+#[inline]
+#[cfg(feature = "unix-file-copy-paste")]
+pub fn is_support_file_copy_paste(ver: &str) -> bool {
+    is_support_file_copy_paste_num(hbb_common::get_version_number(ver))
+}
+
+#[inline]
+#[cfg(feature = "unix-file-copy-paste")]
+pub fn is_support_file_copy_paste_num(ver: i64) -> bool {
+    ver >= hbb_common::get_version_number("1.3.8")
+}
+
+pub fn is_support_remote_print(ver: &str) -> bool {
+    hbb_common::get_version_number(ver) >= hbb_common::get_version_number("1.3.9")
+}
+
+pub fn is_support_file_paste_if_macos(ver: &str) -> bool {
+    hbb_common::get_version_number(ver) >= hbb_common::get_version_number("1.3.9")
+}
+
+#[inline]
+pub fn is_support_screenshot(ver: &str) -> bool {
+    is_support_multi_ui_session_num(hbb_common::get_version_number(ver))
+}
+
+#[inline]
+pub fn is_support_screenshot_num(ver: i64) -> bool {
+    ver >= hbb_common::get_version_number("1.4.0")
+}
+
+#[inline]
+pub fn is_support_file_transfer_resume(ver: &str) -> bool {
+    is_support_file_transfer_resume_num(hbb_common::get_version_number(ver))
+}
+
+#[inline]
+pub fn is_support_file_transfer_resume_num(ver: i64) -> bool {
+    ver >= hbb_common::get_version_number("1.4.2")
+}
+
+/// Minimum server version required for relative mouse mode support.
+/// This constant must mirror Flutter's `kMinVersionForRelativeMouseMode` in `consts.dart`.
+const MIN_VERSION_RELATIVE_MOUSE_MODE: &str = "1.4.5";
+
+#[inline]
+pub fn is_support_relative_mouse_mode(ver: &str) -> bool {
+    is_support_relative_mouse_mode_num(hbb_common::get_version_number(ver))
+}
+
+#[inline]
+pub fn is_support_relative_mouse_mode_num(ver: i64) -> bool {
+    ver >= hbb_common::get_version_number(MIN_VERSION_RELATIVE_MOUSE_MODE)
+}
+
+// is server process, with "--server" args
+#[inline]
+pub fn is_server() -> bool {
+    *IS_SERVER
+}
+
+#[inline]
+pub fn need_fs_cm_send_files() -> bool {
+    #[cfg(windows)]
+    {
+        is_server()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+#[inline]
+pub fn is_main() -> bool {
+    *IS_MAIN
+}
+
+#[inline]
+pub fn is_cm() -> bool {
+    *IS_CM
+}
+
+// Is server logic running.
+#[inline]
+pub fn is_server_running() -> bool {
+    *SERVER_RUNNING.read().unwrap()
+}
+
+#[inline]
+pub fn valid_for_numlock(evt: &KeyEvent) -> bool {
+    if let Some(key_event::Union::ControlKey(ck)) = evt.union {
+        let v = ck.value();
+        (v >= ControlKey::Numpad0.value() && v <= ControlKey::Numpad9.value())
+            || v == ControlKey::Decimal.value()
     } else {
-      return preference;
+        false
     }
-  }
-
-  static ColorThemeExtension color(BuildContext context) {
-    return Theme.of(context).extension<ColorThemeExtension>()!;
-  }
-
-  static TabbarTheme tabbar(BuildContext context) {
-    return Theme.of(context).extension<TabbarTheme>()!;
-  }
-
-  static ThemeMode themeModeFromString(String v) {
-    switch (v) {
-      case "light":
-        return ThemeMode.light;
-      case "dark":
-        return ThemeMode.dark;
-      default:
-        return ThemeMode.system;
-    }
-  }
 }
 
-extension ParseToString on ThemeMode {
-  String toShortString() {
-    return toString().split('.').last;
-  }
+/// Set sound input device.
+pub fn set_sound_input(device: String) {
+    let prior_device = get_option("audio-input".to_owned());
+    if prior_device != device {
+        log::info!("switch to audio input device {}", device);
+        std::thread::spawn(move || {
+            set_option("audio-input".to_owned(), device);
+        });
+    } else {
+        log::info!("audio input is already set to {}", device);
+    }
 }
 
-final ButtonStyle flatButtonStyle = TextButton.styleFrom(
-  minimumSize: Size(0, 36),
-  padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 10.0),
-  shape: const RoundedRectangleBorder(
-    borderRadius: BorderRadius.all(Radius.circular(2.0)),
-  ),
-);
+/// Get system's default sound input device name.
+#[inline]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn get_default_sound_input() -> Option<String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        use cpal::traits::{DeviceTrait, HostTrait};
+        let host = cpal::default_host();
+        let dev = host.default_input_device();
+        return if let Some(dev) = dev {
+            match dev.name() {
+                Ok(name) => Some(name),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let input = crate::platform::linux::get_default_pa_source();
+        return if let Some(input) = input {
+            Some(input.1)
+        } else {
+            None
+        };
+    }
+}
 
-List<Locale> supportedLocales = const [
-  Locale('en', 'US'),
-  Locale('zh', 'CN'),
-  Locale('zh', 'TW'),
-  Locale('zh', 'SG'),
-  Locale('fr'),
-  Locale('de'),
-  Locale('it'),
-  Locale('ja'),
-  Locale('cs'),
-  Locale('pl'),
-  Locale('ko'),
-  Locale('hu'),
-  Locale('pt'),
-  Locale('ru'),
-  Locale('sk'),
-  Locale('id'),
-  Locale('da'),
-  Locale('eo'),
-  Locale('tr'),
-  Locale('kz'),
-  Locale('es'),
-  Locale('nl'),
-  Locale('nb'),
-  Locale('et'),
-  Locale('eu'),
-  Locale('bg'),
-  Locale('be'),
-  Locale('vn'),
-  Locale('uk'),
-  Locale('fa'),
-  Locale('ca'),
-  Locale('el'),
-  Locale('sv'),
-  Locale('sq'),
-  Locale('sr'),
-  Locale('th'),
-  Locale('sl'),
-  Locale('ro'),
-  Locale('lt'),
-  Locale('lv'),
-  Locale('ar'),
-  Locale('he'),
-  Locale('hr'),
+#[inline]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub fn get_default_sound_input() -> Option<String> {
+    None
+}
+
+#[cfg(feature = "use_rubato")]
+pub fn resample_channels(
+    data: &[f32],
+    sample_rate0: u32,
+    sample_rate: u32,
+    channels: u16,
+) -> Vec<f32> {
+    use rubato::{
+        InterpolationParameters, InterpolationType, Resampler, SincFixedIn, WindowFunction,
+    };
+    let params = InterpolationParameters {
+        sinc_len: 256,
+        f_cutoff: 0.95,
+        interpolation: InterpolationType::Nearest,
+        oversampling_factor: 160,
+        window: WindowFunction::BlackmanHarris2,
+    };
+    let mut resampler = SincFixedIn::<f64>::new(
+        sample_rate as f64 / sample_rate0 as f64,
+        params,
+        data.len() / (channels as usize),
+        channels as _,
+    );
+    let mut waves_in = Vec::new();
+    if channels == 2 {
+        waves_in.push(
+            data.iter()
+                .step_by(2)
+                .map(|x| *x as f64)
+                .collect::<Vec<_>>(),
+        );
+        waves_in.push(
+            data.iter()
+                .skip(1)
+                .step_by(2)
+                .map(|x| *x as f64)
+                .collect::<Vec<_>>(),
+        );
+    } else {
+        waves_in.push(data.iter().map(|x| *x as f64).collect::<Vec<_>>());
+    }
+    if let Ok(x) = resampler.process(&waves_in) {
+        if x.is_empty() {
+            Vec::new()
+        } else if x.len() == 2 {
+            x[0].chunks(1)
+                .zip(x[1].chunks(1))
+                .flat_map(|(a, b)| a.into_iter().chain(b))
+                .map(|x| *x as f32)
+                .collect()
+        } else {
+            x[0].iter().map(|x| *x as f32).collect()
+        }
+    } else {
+        Vec::new()
+    }
+}
+
+#[cfg(feature = "use_dasp")]
+pub fn audio_resample(
+    data: &[f32],
+    sample_rate0: u32,
+    sample_rate: u32,
+    channels: u16,
+) -> Vec<f32> {
+    use dasp::{interpolate::linear::Linear, signal, Signal};
+    let n = data.len() / (channels as usize);
+    let n = n * sample_rate as usize / sample_rate0 as usize;
+    if channels == 2 {
+        let mut source = signal::from_interleaved_samples_iter::<_, [_; 2]>(data.iter().cloned());
+        let a = source.next();
+        let b = source.next();
+        let interp = Linear::new(a, b);
+        let mut data = Vec::with_capacity(n << 1);
+        for x in source
+            .from_hz_to_hz(interp, sample_rate0 as _, sample_rate as _)
+            .take(n)
+        {
+            data.push(x[0]);
+            data.push(x[1]);
+        }
+        data
+    } else {
+        let mut source = signal::from_iter(data.iter().cloned());
+        let a = source.next();
+        let b = source.next();
+        let interp = Linear::new(a, b);
+        source
+            .from_hz_to_hz(interp, sample_rate0 as _, sample_rate as _)
+            .take(n)
+            .collect()
+    }
+}
+
+#[cfg(feature = "use_samplerate")]
+pub fn audio_resample(
+    data: &[f32],
+    sample_rate0: u32,
+    sample_rate: u32,
+    channels: u16,
+) -> Vec<f32> {
+    use samplerate::{convert, ConverterType};
+    convert(
+        sample_rate0 as _,
+        sample_rate as _,
+        channels as _,
+        ConverterType::SincBestQuality,
+        data,
+    )
+    .unwrap_or_default()
+}
+
+pub fn audio_rechannel(
+    input: Vec<f32>,
+    in_hz: u32,
+    out_hz: u32,
+    in_chan: u16,
+    output_chan: u16,
+) -> Vec<f32> {
+    if in_chan == output_chan {
+        return input;
+    }
+    let mut input = input;
+    input.truncate(input.len() / in_chan as usize * in_chan as usize);
+    match (in_chan, output_chan) {
+        (1, 2) => audio_rechannel_1_2(&input, in_hz, out_hz),
+        (1, 3) => audio_rechannel_1_3(&input, in_hz, out_hz),
+        (1, 4) => audio_rechannel_1_4(&input, in_hz, out_hz),
+        (1, 5) => audio_rechannel_1_5(&input, in_hz, out_hz),
+        (1, 6) => audio_rechannel_1_6(&input, in_hz, out_hz),
+        (1, 7) => audio_rechannel_1_7(&input, in_hz, out_hz),
+        (1, 8) => audio_rechannel_1_8(&input, in_hz, out_hz),
+        (2, 1) => audio_rechannel_2_1(&input, in_hz, out_hz),
+        (2, 3) => audio_rechannel_2_3(&input, in_hz, out_hz),
+        (2, 4) => audio_rechannel_2_4(&input, in_hz, out_hz),
+        (2, 5) => audio_rechannel_2_5(&input, in_hz, out_hz),
+        (2, 6) => audio_rechannel_2_6(&input, in_hz, out_hz),
+        (2, 7) => audio_rechannel_2_7(&input, in_hz, out_hz),
+        (2, 8) => audio_rechannel_2_8(&input, in_hz, out_hz),
+        (3, 1) => audio_rechannel_3_1(&input, in_hz, out_hz),
+        (3, 2) => audio_rechannel_3_2(&input, in_hz, out_hz),
+        (3, 4) => audio_rechannel_3_4(&input, in_hz, out_hz),
+        (3, 5) => audio_rechannel_3_5(&input, in_hz, out_hz),
+        (3, 6) => audio_rechannel_3_6(&input, in_hz, out_hz),
+        (3, 7) => audio_rechannel_3_7(&input, in_hz, out_hz),
+        (3, 8) => audio_rechannel_3_8(&input, in_hz, out_hz),
+        (4, 1) => audio_rechannel_4_1(&input, in_hz, out_hz),
+        (4, 2) => audio_rechannel_4_2(&input, in_hz, out_hz),
+        (4, 3) => audio_rechannel_4_3(&input, in_hz, out_hz),
+        (4, 5) => audio_rechannel_4_5(&input, in_hz, out_hz),
+        (4, 6) => audio_rechannel_4_6(&input, in_hz, out_hz),
+        (4, 7) => audio_rechannel_4_7(&input, in_hz, out_hz),
+        (4, 8) => audio_rechannel_4_8(&input, in_hz, out_hz),
+        (5, 1) => audio_rechannel_5_1(&input, in_hz, out_hz),
+        (5, 2) => audio_rechannel_5_2(&input, in_hz, out_hz),
+        (5, 3) => audio_rechannel_5_3(&input, in_hz, out_hz),
+        (5, 4) => audio_rechannel_5_4(&input, in_hz, out_hz),
+        (5, 6) => audio_rechannel_5_6(&input, in_hz, out_hz),
+        (5, 7) => audio_rechannel_5_7(&input, in_hz, out_hz),
+        (5, 8) => audio_rechannel_5_8(&input, in_hz, out_hz),
+        (6, 1) => audio_rechannel_6_1(&input, in_hz, out_hz),
+        (6, 2) => audio_rechannel_6_2(&input, in_hz, out_hz),
+        (6, 3) => audio_rechannel_6_3(&input, in_hz, out_hz),
+        (6, 4) => audio_rechannel_6_4(&input, in_hz, out_hz),
+        (6, 5) => audio_rechannel_6_5(&input, in_hz, out_hz),
+        (6, 7) => audio_rechannel_6_7(&input, in_hz, out_hz),
+        (6, 8) => audio_rechannel_6_8(&input, in_hz, out_hz),
+        (7, 1) => audio_rechannel_7_1(&input, in_hz, out_hz),
+        (7, 2) => audio_rechannel_7_2(&input, in_hz, out_hz),
+        (7, 3) => audio_rechannel_7_3(&input, in_hz, out_hz),
+        (7, 4) => audio_rechannel_7_4(&input, in_hz, out_hz),
+        (7, 5) => audio_rechannel_7_5(&input, in_hz, out_hz),
+        (7, 6) => audio_rechannel_7_6(&input, in_hz, out_hz),
+        (7, 8) => audio_rechannel_7_8(&input, in_hz, out_hz),
+        (8, 1) => audio_rechannel_8_1(&input, in_hz, out_hz),
+        (8, 2) => audio_rechannel_8_2(&input, in_hz, out_hz),
+        (8, 3) => audio_rechannel_8_3(&input, in_hz, out_hz),
+        (8, 4) => audio_rechannel_8_4(&input, in_hz, out_hz),
+        (8, 5) => audio_rechannel_8_5(&input, in_hz, out_hz),
+        (8, 6) => audio_rechannel_8_6(&input, in_hz, out_hz),
+        (8, 7) => audio_rechannel_8_7(&input, in_hz, out_hz),
+        _ => input,
+    }
+}
+
+macro_rules! audio_rechannel {
+    ($name:ident, $in_channels:expr, $out_channels:expr) => {
+        fn $name(input: &[f32], in_hz: u32, out_hz: u32) -> Vec<f32> {
+            use fon::{chan::Ch32, Audio, Frame};
+            let mut in_audio =
+                Audio::<Ch32, $in_channels>::with_silence(in_hz, input.len() / $in_channels);
+            for (x, y) in input.chunks_exact($in_channels).zip(in_audio.iter_mut()) {
+                let mut f = Frame::<Ch32, $in_channels>::default();
+                let mut i = 0;
+                for c in f.channels_mut() {
+                    *c = x[i].into();
+                    i += 1;
+                }
+                *y = f;
+            }
+            Audio::<Ch32, $out_channels>::with_audio(out_hz, &in_audio)
+                .as_f32_slice()
+                .to_owned()
+        }
+    };
+}
+
+audio_rechannel!(audio_rechannel_1_2, 1, 2);
+audio_rechannel!(audio_rechannel_1_3, 1, 3);
+audio_rechannel!(audio_rechannel_1_4, 1, 4);
+audio_rechannel!(audio_rechannel_1_5, 1, 5);
+audio_rechannel!(audio_rechannel_1_6, 1, 6);
+audio_rechannel!(audio_rechannel_1_7, 1, 7);
+audio_rechannel!(audio_rechannel_1_8, 1, 8);
+audio_rechannel!(audio_rechannel_2_1, 2, 1);
+audio_rechannel!(audio_rechannel_2_3, 2, 3);
+audio_rechannel!(audio_rechannel_2_4, 2, 4);
+audio_rechannel!(audio_rechannel_2_5, 2, 5);
+audio_rechannel!(audio_rechannel_2_6, 2, 6);
+audio_rechannel!(audio_rechannel_2_7, 2, 7);
+audio_rechannel!(audio_rechannel_2_8, 2, 8);
+audio_rechannel!(audio_rechannel_3_1, 3, 1);
+audio_rechannel!(audio_rechannel_3_2, 3, 2);
+audio_rechannel!(audio_rechannel_3_4, 3, 4);
+audio_rechannel!(audio_rechannel_3_5, 3, 5);
+audio_rechannel!(audio_rechannel_3_6, 3, 6);
+audio_rechannel!(audio_rechannel_3_7, 3, 7);
+audio_rechannel!(audio_rechannel_3_8, 3, 8);
+audio_rechannel!(audio_rechannel_4_1, 4, 1);
+audio_rechannel!(audio_rechannel_4_2, 4, 2);
+audio_rechannel!(audio_rechannel_4_3, 4, 3);
+audio_rechannel!(audio_rechannel_4_5, 4, 5);
+audio_rechannel!(audio_rechannel_4_6, 4, 6);
+audio_rechannel!(audio_rechannel_4_7, 4, 7);
+audio_rechannel!(audio_rechannel_4_8, 4, 8);
+audio_rechannel!(audio_rechannel_5_1, 5, 1);
+audio_rechannel!(audio_rechannel_5_2, 5, 2);
+audio_rechannel!(audio_rechannel_5_3, 5, 3);
+audio_rechannel!(audio_rechannel_5_4, 5, 4);
+audio_rechannel!(audio_rechannel_5_6, 5, 6);
+audio_rechannel!(audio_rechannel_5_7, 5, 7);
+audio_rechannel!(audio_rechannel_5_8, 5, 8);
+audio_rechannel!(audio_rechannel_6_1, 6, 1);
+audio_rechannel!(audio_rechannel_6_2, 6, 2);
+audio_rechannel!(audio_rechannel_6_3, 6, 3);
+audio_rechannel!(audio_rechannel_6_4, 6, 4);
+audio_rechannel!(audio_rechannel_6_5, 6, 5);
+audio_rechannel!(audio_rechannel_6_7, 6, 7);
+audio_rechannel!(audio_rechannel_6_8, 6, 8);
+audio_rechannel!(audio_rechannel_7_1, 7, 1);
+audio_rechannel!(audio_rechannel_7_2, 7, 2);
+audio_rechannel!(audio_rechannel_7_3, 7, 3);
+audio_rechannel!(audio_rechannel_7_4, 7, 4);
+audio_rechannel!(audio_rechannel_7_5, 7, 5);
+audio_rechannel!(audio_rechannel_7_6, 7, 6);
+audio_rechannel!(audio_rechannel_7_8, 7, 8);
+audio_rechannel!(audio_rechannel_8_1, 8, 1);
+audio_rechannel!(audio_rechannel_8_2, 8, 2);
+audio_rechannel!(audio_rechannel_8_3, 8, 3);
+audio_rechannel!(audio_rechannel_8_4, 8, 4);
+audio_rechannel!(audio_rechannel_8_5, 8, 5);
+audio_rechannel!(audio_rechannel_8_6, 8, 6);
+audio_rechannel!(audio_rechannel_8_7, 8, 7);
+
+pub struct CheckTestNatType {
+    is_direct: bool,
+}
+
+impl CheckTestNatType {
+    pub fn new() -> Self {
+        Self {
+            is_direct: Config::get_socks().is_none() && !config::use_ws(),
+        }
+    }
+}
+
+impl Drop for CheckTestNatType {
+    fn drop(&mut self) {
+        let is_direct = Config::get_socks().is_none() && !config::use_ws();
+        if self.is_direct != is_direct {
+            test_nat_type();
+        }
+    }
+}
+
+pub fn test_nat_type() {
+    test_ipv6_sync();
+    use std::sync::atomic::{AtomicBool, Ordering};
+    std::thread::spawn(move || {
+        static IS_RUNNING: AtomicBool = AtomicBool::new(false);
+        if IS_RUNNING.load(Ordering::SeqCst) {
+            return;
+        }
+        IS_RUNNING.store(true, Ordering::SeqCst);
+
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        crate::ipc::get_socks_ws();
+        let is_direct = Config::get_socks().is_none() && !config::use_ws();
+        if !is_direct {
+            Config::set_nat_type(NatType::SYMMETRIC as _);
+            IS_RUNNING.store(false, Ordering::SeqCst);
+            return;
+        }
+
+        let mut i = 0;
+        loop {
+            match test_nat_type_() {
+                Ok(true) => break,
+                Err(err) => {
+                    log::error!("test nat: {}", err);
+                }
+                _ => {}
+            }
+            if Config::get_nat_type() != 0 {
+                break;
+            }
+            i = i * 2 + 1;
+            if i > 300 {
+                i = 300;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(i));
+        }
+
+        IS_RUNNING.store(false, Ordering::SeqCst);
+    });
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn test_nat_type_() -> ResultType<bool> {
+    log::info!("Testing nat ...");
+    let start = std::time::Instant::now();
+    let server1 = Config::get_rendezvous_server();
+    let server2 = crate::increase_port(&server1, -1);
+    let mut msg_out = RendezvousMessage::new();
+    let serial = Config::get_serial();
+    msg_out.set_test_nat_request(TestNatRequest {
+        serial,
+        ..Default::default()
+    });
+    let mut port1 = 0;
+    let mut port2 = 0;
+    let mut local_addr = None;
+    for i in 0..2 {
+        let server = if i == 0 { &*server1 } else { &*server2 };
+        let mut socket =
+            socket_client::connect_tcp_local(server, local_addr, CONNECT_TIMEOUT).await?;
+        if i == 0 {
+            // reuse the local addr is required for nat test
+            local_addr = Some(socket.local_addr());
+            Config::set_option(
+                "local-ip-addr".to_owned(),
+                socket.local_addr().ip().to_string(),
+            );
+        }
+        socket.send(&msg_out).await?;
+        if let Some(msg_in) = get_next_nonkeyexchange_msg(&mut socket, None).await {
+            if let Some(rendezvous_message::Union::TestNatResponse(tnr)) = msg_in.union {
+                log::debug!("Got nat response from {}: port={}", server, tnr.port);
+                if i == 0 {
+                    port1 = tnr.port;
+                } else {
+                    port2 = tnr.port;
+                }
+                if let Some(cu) = tnr.cu.as_ref() {
+                    Config::set_option(
+                        "rendezvous-servers".to_owned(),
+                        cu.rendezvous_servers.join(","),
+                    );
+                    Config::set_serial(cu.serial);
+                }
+            }
+        } else {
+            break;
+        }
+    }
+    let ok = port1 > 0 && port2 > 0;
+    if ok {
+        let t = if port1 == port2 {
+            NatType::ASYMMETRIC
+        } else {
+            NatType::SYMMETRIC
+        };
+        Config::set_nat_type(t as _);
+        log::info!("Tested nat type: {:?} in {:?}", t, start.elapsed());
+    }
+    Ok(ok)
+}
+
+pub async fn get_rendezvous_server(ms_timeout: u64) -> (String, Vec<String>, bool) {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let (mut a, mut b) = get_rendezvous_server_(ms_timeout);
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let (mut a, mut b) = get_rendezvous_server_(ms_timeout).await;
+    #[cfg(windows)]
+    if let Ok(lic) = crate::platform::get_license_from_exe_name() {
+        if !lic.host.is_empty() {
+            a = lic.host;
+        }
+    }
+    let mut b: Vec<String> = b
+        .drain(..)
+        .map(|x| socket_client::check_port(x, config::RENDEZVOUS_PORT))
+        .collect();
+    let c = if b.contains(&a) {
+        b = b.drain(..).filter(|x| x != &a).collect();
+        true
+    } else {
+        a = b.pop().unwrap_or(a);
+        false
+    };
+    (a, b, c)
+}
+
+#[inline]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn get_rendezvous_server_(_ms_timeout: u64) -> (String, Vec<String>) {
+    (
+        Config::get_rendezvous_server(),
+        Config::get_rendezvous_servers(),
+    )
+}
+
+#[inline]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+async fn get_rendezvous_server_(ms_timeout: u64) -> (String, Vec<String>) {
+    crate::ipc::get_rendezvous_server(ms_timeout).await
+}
+
+#[inline]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub async fn get_nat_type(_ms_timeout: u64) -> i32 {
+    Config::get_nat_type()
+}
+
+#[inline]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub async fn get_nat_type(ms_timeout: u64) -> i32 {
+    crate::ipc::get_nat_type(ms_timeout).await
+}
+
+// used for client to test which server is faster in case stop-servic=Y
+#[tokio::main(flavor = "current_thread")]
+async fn test_rendezvous_server_() {
+    let servers = Config::get_rendezvous_servers();
+    if servers.len() <= 1 {
+        return;
+    }
+    let mut futs = Vec::new();
+    for host in servers {
+        futs.push(tokio::spawn(async move {
+            let tm = std::time::Instant::now();
+            if socket_client::connect_tcp(
+                crate::check_port(&host, RENDEZVOUS_PORT),
+                CONNECT_TIMEOUT,
+            )
+            .await
+            .is_ok()
+            {
+                let elapsed = tm.elapsed().as_micros();
+                Config::update_latency(&host, elapsed as _);
+            } else {
+                Config::update_latency(&host, -1);
+            }
+        }));
+    }
+    join_all(futs).await;
+    Config::reset_online();
+}
+
+// #[cfg(any(target_os = "android", target_os = "ios", feature = "cli"))]
+pub fn test_rendezvous_server() {
+    std::thread::spawn(test_rendezvous_server_);
+}
+
+pub fn refresh_rendezvous_server() {
+    #[cfg(any(target_os = "android", target_os = "ios", feature = "cli"))]
+    test_rendezvous_server();
+    #[cfg(not(any(target_os = "android", target_os = "ios", feature = "cli")))]
+    std::thread::spawn(|| {
+        if crate::ipc::test_rendezvous_server().is_err() {
+            test_rendezvous_server();
+        }
+    });
+}
+
+pub fn run_me<T: AsRef<std::ffi::OsStr>>(args: Vec<T>) -> std::io::Result<std::process::Child> {
+    #[cfg(target_os = "linux")]
+    if let Ok(appdir) = std::env::var("APPDIR") {
+        let appimage_cmd = std::path::Path::new(&appdir).join("AppRun");
+        if appimage_cmd.exists() {
+            log::info!("path: {:?}", appimage_cmd);
+            return std::process::Command::new(appimage_cmd).args(&args).spawn();
+        }
+    }
+    let cmd = std::env::current_exe()?;
+    let mut cmd = std::process::Command::new(cmd);
+    #[cfg(windows)]
+    let mut force_foreground = false;
+    #[cfg(windows)]
+    {
+        let arg_strs = args
+            .iter()
+            .map(|x| x.as_ref().to_string_lossy())
+            .collect::<Vec<_>>();
+        if arg_strs == vec!["--install"] || arg_strs == &["--noinstall"] {
+            cmd.env(crate::platform::SET_FOREGROUND_WINDOW, "1");
+            force_foreground = true;
+        }
+    }
+    let result = cmd.args(&args).spawn();
+    match result.as_ref() {
+        Ok(_child) =>
+        {
+            #[cfg(windows)]
+            if force_foreground {
+                unsafe { winapi::um::winuser::AllowSetForegroundWindow(_child.id() as u32) };
+            }
+        }
+        Err(err) => log::error!("run_me: {err:?}"),
+    }
+    result
+}
+
+#[inline]
+pub fn username() -> String {
+    // fix bug of whoami
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return whoami::username().trim_end_matches('\0').to_owned();
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return DEVICE_NAME.lock().unwrap().clone();
+}
+
+// Exactly the implementation of "whoami::hostname()".
+// This wrapper is to suppress warnings.
+#[inline(always)]
+#[cfg(not(target_os = "ios"))]
+pub fn whoami_hostname() -> String {
+    let mut hostname = whoami::fallible::hostname().unwrap_or_else(|_| "localhost".to_string());
+    hostname.make_ascii_lowercase();
+    hostname
+}
+
+#[inline]
+pub fn hostname() -> String {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        #[allow(unused_mut)]
+        let mut name = whoami_hostname();
+        // some time, there is .local, some time not, so remove it for osx
+        #[cfg(target_os = "macos")]
+        if name.ends_with(".local") {
+            name = name.trim_end_matches(".local").to_owned();
+        }
+        name
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return DEVICE_NAME.lock().unwrap().clone();
+}
+
+#[inline]
+pub fn get_sysinfo() -> serde_json::Value {
+    use hbb_common::sysinfo::System;
+    let mut system = System::new();
+    system.refresh_memory();
+    system.refresh_cpu();
+    let memory = system.total_memory();
+    let memory = (memory as f64 / 1024. / 1024. / 1024. * 100.).round() / 100.;
+    let cpus = system.cpus();
+    let cpu_name = cpus.first().map(|x| x.brand()).unwrap_or_default();
+    let cpu_name = cpu_name.trim_end();
+    let cpu_freq = cpus.first().map(|x| x.frequency()).unwrap_or_default();
+    let cpu_freq = (cpu_freq as f64 / 1024. * 100.).round() / 100.;
+    let cpu = if cpu_freq > 0. {
+        format!("{}, {}GHz, ", cpu_name, cpu_freq)
+    } else {
+        "".to_owned() // android
+    };
+    let num_cpus = num_cpus::get();
+    let num_pcpus = num_cpus::get_physical();
+    let mut os = system.distribution_id();
+    os = format!("{} / {}", os, system.long_os_version().unwrap_or_default());
+    #[cfg(windows)]
+    {
+        os = format!("{os} - {}", system.os_version().unwrap_or_default());
+    }
+    let hostname = hostname(); // sys.hostname() return localhost on android in my test
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let out;
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let mut out;
+    out = json!({
+        "cpu": format!("{cpu}{num_cpus}/{num_pcpus} cores"),
+        "memory": format!("{memory}GB"),
+        "os": os,
+        "hostname": hostname,
+    });
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let username = crate::platform::get_active_username();
+        if !username.is_empty() && (!cfg!(windows) || username != "SYSTEM") {
+            out["username"] = json!(username);
+        }
+    }
+    out
+}
+
+#[inline]
+pub fn check_port<T: std::string::ToString>(host: T, port: i32) -> String {
+    hbb_common::socket_client::check_port(host, port)
+}
+
+#[inline]
+pub fn increase_port<T: std::string::ToString>(host: T, offset: i32) -> String {
+    hbb_common::socket_client::increase_port(host, offset)
+}
+
+pub const POSTFIX_SERVICE: &'static str = "_service";
+
+#[inline]
+pub fn is_control_key(evt: &KeyEvent, key: &ControlKey) -> bool {
+    if let Some(key_event::Union::ControlKey(ck)) = evt.union {
+        ck.value() == key.value()
+    } else {
+        false
+    }
+}
+
+#[inline]
+pub fn is_modifier(evt: &KeyEvent) -> bool {
+    if let Some(key_event::Union::ControlKey(ck)) = evt.union {
+        let v = ck.value();
+        v == ControlKey::Alt.value()
+            || v == ControlKey::Shift.value()
+            || v == ControlKey::Control.value()
+            || v == ControlKey::Meta.value()
+            || v == ControlKey::RAlt.value()
+            || v == ControlKey::RShift.value()
+            || v == ControlKey::RControl.value()
+            || v == ControlKey::RWin.value()
+    } else {
+        false
+    }
+}
+
+pub fn check_software_update() {
+//关闭检测自定义客户端不能升级检测
+//    if is_custom_client() {
+//        return;
+//    }
+    log::info!("=== 升级检查启动 ===");
+    // 强制执行升级检查，忽略用户设置
+    std::thread::spawn(move || {
+        log::info!("升级检查线程创建成功");
+        // 立即执行一次升级检查
+        let result = do_check_software_update();
+        log::info!("升级检查结果: {:?}", result);
+        allow_err!(result);
+    });
+    log::info!("=== 升级检查线程已启动 ===");
+}
+
+// No need to check `danger_accept_invalid_cert` for now.
+// Because the url is always `https://api.rustdesk.com/version/latest`.
+#[tokio::main(flavor = "current_thread")]
+pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
+    log::info!("=== do_check_software_update 开始执行 ===");
+    
+    // 获取版本检查 URL
+    log::info!("获取版本检查请求参数");
+    let (request, url) = hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
+    log::info!("版本检查 URL: {}", url);
+    log::info!("版本检查请求: {:?}", request);
+    
+    // 准备网络请求
+    log::info!("准备网络请求");
+    let proxy_conf = Config::get_socks();
+    log::info!("代理配置: {:?}", proxy_conf);
+    let tls_url = get_url_for_tls(&url, &proxy_conf);
+    log::info!("TLS URL: {:?}", tls_url);
+    let tls_type = get_cached_tls_type(tls_url);
+    let is_tls_not_cached = tls_type.is_none();
+    let tls_type = tls_type.unwrap_or(TlsType::Rustls);
+    log::info!("使用 TLS 类型: {:?}", tls_type);
+    
+    // 创建 HTTP 客户端
+    log::info!("创建 HTTP 客户端");
+    let client = create_http_client_async(tls_type, false);
+    
+    // 发送网络请求
+    log::info!("发送版本检查请求");
+    let latest_release_response = match client.post(&url).json(&request).send().await {
+        Ok(resp) => {
+            log::info!("版本检查请求成功，状态码: {}", resp.status());
+            upsert_tls_cache(tls_url, tls_type, false);
+            log::info!("更新 TLS 缓存成功");
+            resp
+        }
+        Err(err) => {
+            log::error!("版本检查请求失败: {:?}", err);
+            if is_tls_not_cached && err.is_request() {
+                log::info!("尝试使用 Native TLS 重新连接");
+                let tls_type = TlsType::NativeTls;
+                log::info!("使用 TLS 类型: {:?}", tls_type);
+                let client = create_http_client_async(tls_type, false);
+                log::info!("重新发送版本检查请求");
+                let resp = client.post(&url).json(&request).send().await?;
+                log::info!("版本检查请求成功，状态码: {}", resp.status());
+                upsert_tls_cache(tls_url, tls_type, false);
+                log::info!("更新 TLS 缓存成功");
+                resp
+            } else {
+                log::error!("版本检查请求最终失败，返回错误");
+                return Err(err.into());
+            }
+        }
+    };
+    
+    // 读取响应
+    log::info!("读取响应体");
+    let bytes = latest_release_response.bytes().await?;
+    log::info!("响应体长度: {} 字节", bytes.len());
+    
+    // 解析响应
+    log::info!("解析响应体");
+    let resp: hbb_common::VersionCheckResponse = serde_json::from_slice(&bytes)?;
+    log::info!("解析响应成功: {:?}", resp);
+    
+    // 提取版本信息
+    let response_url = resp.url;
+    log::info!("最新版本下载 URL: {}", response_url);
+    let latest_release_version = response_url.rsplit('/').next().unwrap_or_default();
+    log::info!("最新版本号: {}", latest_release_version);
+    log::info!("当前版本号: {}", crate::VERSION);
+    
+    // 比较版本
+    let latest_version_num = get_version_number(&latest_release_version);
+    let current_version_num = get_version_number(crate::VERSION);
+    log::info!("最新版本数值: {}", latest_version_num);
+    log::info!("当前版本数值: {}", current_version_num);
+    
+    if latest_version_num > current_version_num {
+        log::info!("发现新版本: {}", latest_release_version);
+        #[cfg(feature = "flutter")]
+        {
+            log::info!("发送 Flutter 事件通知新版本");
+            let mut m = HashMap::new();
+            m.insert("name", "check_software_update_finish");
+            m.insert("url", &response_url);
+            if let Ok(data) = serde_json::to_string(&m) {
+                log::info!("Flutter 事件数据: {}", data);
+                let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, data);
+                log::info!("Flutter 事件发送成功");
+            } else {
+                log::error!("Flutter 事件数据序列化失败");
+            }
+        }
+        log::info!("更新 SOFTWARE_UPDATE_URL 成功: {}", response_url);
+        *SOFTWARE_UPDATE_URL.lock().unwrap() = response_url;
+    } else {
+        log::info!("当前已是最新版本，无需更新");
+        *SOFTWARE_UPDATE_URL.lock().unwrap() = "".to_string();
+        log::info!("清空 SOFTWARE_UPDATE_URL");
+    }
+    
+    log::info!("=== do_check_software_update 执行完成 ===");
+    Ok(())
+}
+
+#[inline]
+pub fn get_app_name() -> String {
+    hbb_common::config::APP_NAME.read().unwrap().clone()
+}
+
+#[inline]
+pub fn is_rustdesk() -> bool {
+    hbb_common::config::APP_NAME.read().unwrap().eq("RustDesk")
+}
+
+#[inline]
+pub fn get_uri_prefix() -> String {
+    format!("{}://", get_app_name().to_lowercase())
+}
+
+#[cfg(target_os = "macos")]
+pub fn get_full_name() -> String {
+    format!(
+        "{}.{}",
+        hbb_common::config::ORG.read().unwrap(),
+        hbb_common::config::APP_NAME.read().unwrap(),
+    )
+}
+
+pub fn is_setup(name: &str) -> bool {
+    name.to_lowercase().ends_with("install.exe")
+}
+
+pub fn get_custom_rendezvous_server(custom: String) -> String {
+    #[cfg(windows)]
+    if let Ok(lic) = crate::platform::windows::get_license_from_exe_name() {
+        if !lic.host.is_empty() {
+            return lic.host.clone();
+        }
+    }
+    if !custom.is_empty() {
+        return custom;
+    }
+    if !config::PROD_RENDEZVOUS_SERVER.read().unwrap().is_empty() {
+        return config::PROD_RENDEZVOUS_SERVER.read().unwrap().clone();
+    }
+    "".to_owned()
+}
+
+#[inline]
+pub fn get_api_server(api: String, custom: String) -> String {
+    if Config::no_register_device() {
+        return "".to_owned();
+    }
+    let mut res = get_api_server_(api, custom);
+    if res.ends_with('/') {
+        res.pop();
+    }
+    if res.starts_with("https")
+        && res.ends_with(":34674")
+        && get_builtin_option(keys::OPTION_ALLOW_HTTPS_34674) != "Y"
+    {
+        return res.replace(":34674", "");
+    }
+    res
+}
+
+fn get_api_server_(api: String, custom: String) -> String {
+    #[cfg(windows)]
+    if let Ok(lic) = crate::platform::windows::get_license_from_exe_name() {
+        if !lic.api.is_empty() {
+            return lic.api.clone();
+        }
+    }
+    if !api.is_empty() {
+        return api.to_owned();
+    }
+    let s0 = get_custom_rendezvous_server(custom);
+    if !s0.is_empty() {
+        let s = crate::increase_port(&s0, -2);
+        if s == s0 {
+            return format!("http://{}:{}", s, config::RENDEZVOUS_PORT - 2);
+        } else {
+            return format!("http://{}", s);
+        }
+    }
+    "https://admin.rustdesk.com".to_owned()
+}
+
+#[inline]
+pub fn is_public(url: &str) -> bool {
+    url.contains("rustdesk.com/") || url.ends_with("rustdesk.com")
+}
+
+pub fn get_udp_punch_enabled() -> bool {
+    config::option2bool(
+        keys::OPTION_ENABLE_UDP_PUNCH,
+        &get_local_option(keys::OPTION_ENABLE_UDP_PUNCH),
+    )
+}
+
+pub fn get_ipv6_punch_enabled() -> bool {
+    config::option2bool(
+        keys::OPTION_ENABLE_IPV6_PUNCH,
+        &get_local_option(keys::OPTION_ENABLE_IPV6_PUNCH),
+    )
+}
+
+pub fn get_local_option(key: &str) -> String {
+    let v = LocalConfig::get_option(key);
+    if key == keys::OPTION_ENABLE_UDP_PUNCH || key == keys::OPTION_ENABLE_IPV6_PUNCH {
+        if v.is_empty() {
+            if !is_public(&Config::get_rendezvous_server()) {
+                return "N".to_owned();
+            }
+        }
+    }
+    v
+}
+
+pub fn get_audit_server(api: String, custom: String, typ: String) -> String {
+    let url = get_api_server(api, custom);
+    if url.is_empty() || is_public(&url) {
+        return "".to_owned();
+    }
+    format!("{}/api/audit/{}", url, typ)
+}
+
+pub async fn post_request(url: String, body: String, header: &str) -> ResultType<String> {
+    let proxy_conf = Config::get_socks();
+    let tls_url = get_url_for_tls(&url, &proxy_conf);
+    let tls_type = get_cached_tls_type(tls_url);
+    let danger_accept_invalid_cert = get_cached_tls_accept_invalid_cert(tls_url);
+    let response = post_request_(
+        &url,
+        tls_url,
+        body.clone(),
+        header,
+        tls_type,
+        danger_accept_invalid_cert,
+        danger_accept_invalid_cert,
+    )
+    .await?;
+    Ok(response.text().await?)
+}
+
+#[async_recursion]
+async fn post_request_(
+    url: &str,
+    tls_url: &str,
+    body: String,
+    header: &str,
+    tls_type: Option<TlsType>,
+    danger_accept_invalid_cert: Option<bool>,
+    original_danger_accept_invalid_cert: Option<bool>,
+) -> ResultType<reqwest::Response> {
+    let mut req = create_http_client_async(
+        tls_type.unwrap_or(TlsType::Rustls),
+        danger_accept_invalid_cert.unwrap_or(false),
+    )
+    .post(url);
+    if !header.is_empty() {
+        let tmp: Vec<&str> = header.split(": ").collect();
+        if tmp.len() == 2 {
+            req = req.header(tmp[0], tmp[1]);
+        }
+    }
+    req = req.header("Content-Type", "application/json");
+    let to = std::time::Duration::from_secs(12);
+    if tls_type.is_some() && danger_accept_invalid_cert.is_some() {
+        // This branch is used to reduce a `clone()` when both `tls_type` and
+        // `danger_accept_invalid_cert` are cached.
+        match req.body(body.clone()).timeout(to).send().await {
+            Ok(resp) => {
+                upsert_tls_cache(
+                    tls_url,
+                    tls_type.unwrap_or(TlsType::Rustls),
+                    danger_accept_invalid_cert.unwrap_or(false),
+                );
+                Ok(resp)
+            }
+            Err(e) => Err(anyhow!("{:?}", e)),
+        }
+    } else {
+        match req.body(body.clone()).timeout(to).send().await {
+            Ok(resp) => {
+                upsert_tls_cache(
+                    tls_url,
+                    tls_type.unwrap_or(TlsType::Rustls),
+                    danger_accept_invalid_cert.unwrap_or(false),
+                );
+                Ok(resp)
+            }
+            Err(e) => {
+                if (tls_type.is_none() || danger_accept_invalid_cert.is_none()) && e.is_request() {
+                    if danger_accept_invalid_cert.is_none() {
+                        log::warn!(
+                            "HTTP request failed: {:?}, try again, danger accept invalid cert",
+                            e
+                        );
+                        post_request_(
+                            url,
+                            tls_url,
+                            body,
+                            header,
+                            tls_type,
+                            Some(true),
+                            original_danger_accept_invalid_cert,
+                        )
+                        .await
+                    } else {
+                        log::warn!("HTTP request failed: {:?}, try again with native-tls", e);
+                        post_request_(
+                            url,
+                            tls_url,
+                            body,
+                            header,
+                            Some(TlsType::NativeTls),
+                            original_danger_accept_invalid_cert,
+                            original_danger_accept_invalid_cert,
+                        )
+                        .await
+                    }
+                } else {
+                    Err(anyhow!("{:?}", e))
+                }
+            }
+        }
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+pub async fn post_request_sync(url: String, body: String, header: &str) -> ResultType<String> {
+    post_request(url, body, header).await
+}
+
+#[async_recursion]
+async fn get_http_response_async(
+    url: &str,
+    tls_url: &str,
+    method: &str,
+    body: Option<String>,
+    header: &str,
+    tls_type: Option<TlsType>,
+    danger_accept_invalid_cert: Option<bool>,
+    original_danger_accept_invalid_cert: Option<bool>,
+) -> ResultType<reqwest::Response> {
+    let http_client = create_http_client_async(
+        tls_type.unwrap_or(TlsType::Rustls),
+        danger_accept_invalid_cert.unwrap_or(false),
+    );
+    let mut http_client = match method {
+        "get" => http_client.get(url),
+        "post" => http_client.post(url),
+        "put" => http_client.put(url),
+        "delete" => http_client.delete(url),
+        _ => return Err(anyhow!("The HTTP request method is not supported!")),
+    };
+    let v = serde_json::from_str(header)?;
+
+    if let Value::Object(obj) = v {
+        for (key, value) in obj.iter() {
+            http_client = http_client.header(key, value.as_str().unwrap_or_default());
+        }
+    } else {
+        return Err(anyhow!("HTTP header information parsing failed!"));
+    }
+
+    if tls_type.is_some() && danger_accept_invalid_cert.is_some() {
+        if let Some(b) = body {
+            http_client = http_client.body(b);
+        }
+        match http_client
+            .timeout(std::time::Duration::from_secs(12))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                upsert_tls_cache(
+                    tls_url,
+                    tls_type.unwrap_or(TlsType::Rustls),
+                    danger_accept_invalid_cert.unwrap_or(false),
+                );
+                Ok(resp)
+            }
+            Err(e) => Err(anyhow!("{:?}", e)),
+        }
+    } else {
+        if let Some(b) = body.clone() {
+            http_client = http_client.body(b);
+        }
+
+        match http_client
+            .timeout(std::time::Duration::from_secs(12))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                upsert_tls_cache(
+                    tls_url,
+                    tls_type.unwrap_or(TlsType::Rustls),
+                    danger_accept_invalid_cert.unwrap_or(false),
+                );
+                Ok(resp)
+            }
+            Err(e) => {
+                if (tls_type.is_none() || danger_accept_invalid_cert.is_none()) && e.is_request() {
+                    if danger_accept_invalid_cert.is_none() {
+                        log::warn!(
+                            "HTTP request failed: {:?}, try again, danger accept invalid cert",
+                            e
+                        );
+                        get_http_response_async(
+                            url,
+                            tls_url,
+                            method,
+                            body,
+                            header,
+                            tls_type,
+                            Some(true),
+                            original_danger_accept_invalid_cert,
+                        )
+                        .await
+                    } else {
+                        log::warn!("HTTP request failed: {:?}, try again with native-tls", e);
+                        get_http_response_async(
+                            url,
+                            tls_url,
+                            method,
+                            body,
+                            header,
+                            Some(TlsType::NativeTls),
+                            original_danger_accept_invalid_cert,
+                            original_danger_accept_invalid_cert,
+                        )
+                        .await
+                    }
+                } else {
+                    Err(anyhow!("{:?}", e))
+                }
+            }
+        }
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+pub async fn http_request_sync(
+    url: String,
+    method: String,
+    body: Option<String>,
+    header: String,
+) -> ResultType<String> {
+    let proxy_conf = Config::get_socks();
+    let tls_url = get_url_for_tls(&url, &proxy_conf);
+    let tls_type = get_cached_tls_type(tls_url);
+    let danger_accept_invalid_cert = get_cached_tls_accept_invalid_cert(tls_url);
+    let response = get_http_response_async(
+        &url,
+        tls_url,
+        &method,
+        body.clone(),
+        &header,
+        tls_type,
+        danger_accept_invalid_cert,
+        danger_accept_invalid_cert,
+    )
+    .await?;
+    // Serialize response headers
+    let mut response_headers = serde_json::map::Map::new();
+    for (key, value) in response.headers() {
+        response_headers.insert(
+            key.to_string(),
+            serde_json::json!(value.to_str().unwrap_or("")),
+        );
+    }
+
+    let status_code = response.status().as_u16();
+    let response_body = response.text().await?;
+
+    // Construct the JSON object
+    let mut result = serde_json::map::Map::new();
+    result.insert("status_code".to_string(), serde_json::json!(status_code));
+    result.insert(
+        "headers".to_string(),
+        serde_json::Value::Object(response_headers),
+    );
+    result.insert("body".to_string(), serde_json::json!(response_body));
+
+    // Convert map to JSON string
+    serde_json::to_string(&result).map_err(|e| anyhow!("Failed to serialize response: {}", e))
+}
+
+#[inline]
+pub fn make_privacy_mode_msg_with_details(
+    state: back_notification::PrivacyModeState,
+    details: String,
+    impl_key: String,
+) -> Message {
+    let mut misc = Misc::new();
+    let mut back_notification = BackNotification {
+        details,
+        impl_key,
+        ..Default::default()
+    };
+    back_notification.set_privacy_mode_state(state);
+    misc.set_back_notification(back_notification);
+    let mut msg_out = Message::new();
+    msg_out.set_misc(misc);
+    msg_out
+}
+
+#[inline]
+pub fn make_privacy_mode_msg(
+    state: back_notification::PrivacyModeState,
+    impl_key: String,
+) -> Message {
+    make_privacy_mode_msg_with_details(state, "".to_owned(), impl_key)
+}
+
+pub fn is_keyboard_mode_supported(
+    keyboard_mode: &KeyboardMode,
+    version_number: i64,
+    peer_platform: &str,
+) -> bool {
+    match keyboard_mode {
+        KeyboardMode::Legacy => true,
+        KeyboardMode::Map => {
+            if peer_platform.to_lowercase() == crate::PLATFORM_ANDROID.to_lowercase() {
+                false
+            } else {
+                version_number >= hbb_common::get_version_number("1.2.0")
+            }
+        }
+        KeyboardMode::Translate => version_number >= hbb_common::get_version_number("1.2.0"),
+        KeyboardMode::Auto => version_number >= hbb_common::get_version_number("1.2.0"),
+    }
+}
+
+pub fn get_supported_keyboard_modes(version: i64, peer_platform: &str) -> Vec<KeyboardMode> {
+    KeyboardMode::iter()
+        .filter(|&mode| is_keyboard_mode_supported(mode, version, peer_platform))
+        .map(|&mode| mode)
+        .collect::<Vec<_>>()
+}
+
+pub fn make_fd_to_json(id: i32, path: String, entries: &Vec<FileEntry>) -> String {
+    let fd_json = _make_fd_to_json(id, path, entries);
+    serde_json::to_string(&fd_json).unwrap_or("".into())
+}
+
+pub fn _make_fd_to_json(id: i32, path: String, entries: &Vec<FileEntry>) -> Map<String, Value> {
+    let mut fd_json = serde_json::Map::new();
+    fd_json.insert("id".into(), json!(id));
+    fd_json.insert("path".into(), json!(path));
+
+    let mut entries_out = vec![];
+    for entry in entries {
+        let mut entry_map = serde_json::Map::new();
+        entry_map.insert("entry_type".into(), json!(entry.entry_type.value()));
+        entry_map.insert("name".into(), json!(entry.name));
+        entry_map.insert("size".into(), json!(entry.size));
+        entry_map.insert("modified_time".into(), json!(entry.modified_time));
+        entries_out.push(entry_map);
+    }
+    fd_json.insert("entries".into(), json!(entries_out));
+    fd_json
+}
+
+pub fn make_vec_fd_to_json(fds: &[FileDirectory]) -> String {
+    let mut fd_jsons = vec![];
+
+    for fd in fds.iter() {
+        let fd_json = _make_fd_to_json(fd.id, fd.path.clone(), &fd.entries);
+        fd_jsons.push(fd_json);
+    }
+
+    serde_json::to_string(&fd_jsons).unwrap_or("".into())
+}
+
+pub fn make_empty_dirs_response_to_json(res: &ReadEmptyDirsResponse) -> String {
+    let mut map: Map<String, Value> = serde_json::Map::new();
+    map.insert("path".into(), json!(res.path));
+
+    let mut fd_jsons = vec![];
+
+    for fd in res.empty_dirs.iter() {
+        let fd_json = _make_fd_to_json(fd.id, fd.path.clone(), &fd.entries);
+        fd_jsons.push(fd_json);
+    }
+    map.insert("empty_dirs".into(), fd_jsons.into());
+
+    serde_json::to_string(&map).unwrap_or("".into())
+}
+
+/// The function to handle the url scheme sent by the system.
+///
+/// 1. Try to send the url scheme from ipc.
+/// 2. If failed to send the url scheme, we open a new main window to handle this url scheme.
+pub fn handle_url_scheme(url: String) {
+    #[cfg(not(target_os = "ios"))]
+    if let Err(err) = crate::ipc::send_url_scheme(url.clone()) {
+        log::debug!("Send the url to the existing flutter process failed, {}. Let's open a new program to handle this.", err);
+        let _ = crate::run_me(vec![url]);
+    }
+}
+
+#[inline]
+pub fn encode64<T: AsRef<[u8]>>(input: T) -> String {
+    #[allow(deprecated)]
+    base64::encode(input)
+}
+
+#[inline]
+pub fn decode64<T: AsRef<[u8]>>(input: T) -> Result<Vec<u8>, base64::DecodeError> {
+    #[allow(deprecated)]
+    base64::decode(input)
+}
+
+pub async fn get_key(sync: bool) -> String {
+    #[cfg(windows)]
+    if let Ok(lic) = crate::platform::windows::get_license_from_exe_name() {
+        if !lic.key.is_empty() {
+            return lic.key;
+        }
+    }
+    #[cfg(target_os = "ios")]
+    let mut key = Config::get_option("key");
+    #[cfg(not(target_os = "ios"))]
+    let mut key = if sync {
+        Config::get_option("key")
+    } else {
+        let mut options = crate::ipc::get_options_async().await;
+        options.remove("key").unwrap_or_default()
+    };
+    if key.is_empty() {
+        key = config::RS_PUB_KEY.to_owned();
+    }
+    key
+}
+
+pub fn pk_to_fingerprint(pk: Vec<u8>) -> String {
+    let s: String = pk.iter().map(|u| format!("{:02x}", u)).collect();
+    s.chars()
+        .enumerate()
+        .map(|(i, c)| {
+            if i > 0 && i % 4 == 0 {
+                format!(" {}", c)
+            } else {
+                format!("{}", c)
+            }
+        })
+        .collect()
+}
+
+#[inline]
+pub async fn get_next_nonkeyexchange_msg(
+    conn: &mut Stream,
+    timeout: Option<u64>,
+) -> Option<RendezvousMessage> {
+    let timeout = timeout.unwrap_or(READ_TIMEOUT);
+    for _ in 0..2 {
+        if let Some(Ok(bytes)) = conn.next_timeout(timeout).await {
+            if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(&bytes) {
+                match &msg_in.union {
+                    Some(rendezvous_message::Union::KeyExchange(_)) => {
+                        continue;
+                    }
+                    _ => {
+                        return Some(msg_in);
+                    }
+                }
+            }
+        }
+        break;
+    }
+    None
+}
+
+#[cfg(all(target_os = "windows", not(target_pointer_width = "64")))]
+pub fn check_process(arg: &str, same_session_id: bool) -> bool {
+    let mut path = std::env::current_exe().unwrap_or_default();
+    if let Ok(linked) = path.read_link() {
+        path = linked;
+    }
+    let Some(filename) = path.file_name() else {
+        return false;
+    };
+    let filename = filename.to_string_lossy().to_string();
+    match crate::platform::windows::get_pids_with_first_arg_check_session(
+        &filename,
+        arg,
+        same_session_id,
+    ) {
+        Ok(pids) => {
+            let self_pid = hbb_common::sysinfo::Pid::from_u32(std::process::id());
+            pids.into_iter().filter(|pid| *pid != self_pid).count() > 0
+        }
+        Err(e) => {
+            log::error!("Failed to check process with arg: \"{}\", {}", arg, e);
+            false
+        }
+    }
+}
+
+#[allow(unused_mut)]
+#[cfg(not(all(target_os = "windows", not(target_pointer_width = "64"))))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn check_process(arg: &str, mut same_uid: bool) -> bool {
+    #[cfg(target_os = "macos")]
+    if !crate::platform::is_root() && !same_uid {
+        log::warn!("Can not get other process's command line arguments on macos without root");
+        same_uid = true;
+    }
+    use hbb_common::sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_processes();
+    let mut path = std::env::current_exe().unwrap_or_default();
+    if let Ok(linked) = path.read_link() {
+        path = linked;
+    }
+    let path = path.to_string_lossy().to_lowercase();
+    let my_uid = sys
+        .process((std::process::id() as usize).into())
+        .map(|x| x.user_id())
+        .unwrap_or_default();
+    for (_, p) in sys.processes().iter() {
+        let mut cur_path = p.exe().to_path_buf();
+        if let Ok(linked) = cur_path.read_link() {
+            cur_path = linked;
+        }
+        if cur_path.to_string_lossy().to_lowercase() != path {
+            continue;
+        }
+        if p.pid().to_string() == std::process::id().to_string() {
+            continue;
+        }
+        if same_uid && p.user_id() != my_uid {
+            continue;
+        }
+        // on mac, p.cmd() get "/Applications/RustDesk.app/Contents/MacOS/RustDesk", "XPC_SERVICE_NAME=com.carriez.RustDesk_server"
+        let parg = if p.cmd().len() <= 1 { "" } else { &p.cmd()[1] };
+        if arg.is_empty() {
+            if !parg.starts_with("--") {
+                return true;
+            }
+        } else if arg == parg {
+            return true;
+        }
+    }
+    false
+}
+
+pub async fn secure_tcp(conn: &mut Stream, key: &str) -> ResultType<()> {
+    // Skip additional encryption when using WebSocket connections (wss://)
+    // as WebSocket Secure (wss://) already provides transport layer encryption.
+    // This doesn't affect the end-to-end encryption between clients,
+    // it only avoids redundant encryption between client and server.
+    if use_ws() {
+        return Ok(());
+    }
+    let rs_pk = get_rs_pk(key);
+    let Some(rs_pk) = rs_pk else {
+        bail!("Handshake failed: invalid public key from rendezvous server");
+    };
+    match timeout(READ_TIMEOUT, conn.next()).await? {
+        Some(Ok(bytes)) => {
+            if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(&bytes) {
+                match msg_in.union {
+                    Some(rendezvous_message::Union::KeyExchange(ex)) => {
+                        if ex.keys.len() != 1 {
+                            bail!("Handshake failed: invalid key exchange message");
+                        }
+                        let their_pk_b = sign::verify(&ex.keys[0], &rs_pk)
+                            .map_err(|_| anyhow!("Signature mismatch in key exchange"))?;
+                        let (asymmetric_value, symmetric_value, key) = create_symmetric_key_msg(
+                            get_pk(&their_pk_b)
+                                .context("Wrong their public length in key exchange")?,
+                        );
+                        let mut msg_out = RendezvousMessage::new();
+                        msg_out.set_key_exchange(KeyExchange {
+                            keys: vec![asymmetric_value, symmetric_value],
+                            ..Default::default()
+                        });
+                        timeout(CONNECT_TIMEOUT, conn.send(&msg_out)).await??;
+                        conn.set_key(key);
+                        log::info!("Connection secured");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[inline]
+fn get_pk(pk: &[u8]) -> Option<[u8; 32]> {
+    if pk.len() == 32 {
+        let mut tmp = [0u8; 32];
+        tmp[..].copy_from_slice(&pk);
+        Some(tmp)
+    } else {
+        None
+    }
+}
+
+#[inline]
+pub fn get_rs_pk(str_base64: &str) -> Option<sign::PublicKey> {
+    if let Ok(pk) = crate::decode64(str_base64) {
+        get_pk(&pk).map(|x| sign::PublicKey(x))
+    } else {
+        None
+    }
+}
+
+pub fn decode_id_pk(signed: &[u8], key: &sign::PublicKey) -> ResultType<(String, [u8; 32])> {
+    let res = IdPk::parse_from_bytes(
+        &sign::verify(signed, key).map_err(|_| anyhow!("Signature mismatch"))?,
+    )?;
+    if let Some(pk) = get_pk(&res.pk) {
+        Ok((res.id, pk))
+    } else {
+        bail!("Wrong their public length");
+    }
+}
+
+pub fn create_symmetric_key_msg(their_pk_b: [u8; 32]) -> (Bytes, Bytes, secretbox::Key) {
+    let their_pk_b = box_::PublicKey(their_pk_b);
+    let (our_pk_b, out_sk_b) = box_::gen_keypair();
+    let key = secretbox::gen_key();
+    let nonce = box_::Nonce([0u8; box_::NONCEBYTES]);
+    let sealed_key = box_::seal(&key.0, &nonce, &their_pk_b, &out_sk_b);
+    (Vec::from(our_pk_b.0).into(), sealed_key.into(), key)
+}
+
+#[inline]
+pub fn using_public_server() -> bool {
+    crate::get_custom_rendezvous_server(get_option("custom-rendezvous-server")).is_empty()
+}
+
+pub struct ThrottledInterval {
+    interval: Interval,
+    next_tick: Instant,
+    min_interval: Duration,
+}
+
+impl ThrottledInterval {
+    pub fn new(i: Interval) -> ThrottledInterval {
+        let period = i.period();
+        ThrottledInterval {
+            interval: i,
+            next_tick: Instant::now(),
+            min_interval: Duration::from_secs_f64(period.as_secs_f64() * 0.9),
+        }
+    }
+
+    pub async fn tick(&mut self) -> Instant {
+        let instant = poll_fn(|cx| self.poll_tick(cx));
+        instant.await
+    }
+
+    pub fn poll_tick(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Instant> {
+        match self.interval.poll_tick(cx) {
+            Poll::Ready(instant) => {
+                let now = Instant::now();
+                if self.next_tick <= now {
+                    self.next_tick = now + self.min_interval;
+                    Poll::Ready(instant)
+                } else {
+                    // This call is required since tokio 1.27
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+pub type RustDeskInterval = ThrottledInterval;
+
+#[inline]
+pub fn rustdesk_interval(i: Interval) -> ThrottledInterval {
+    ThrottledInterval::new(i)
+}
+
+pub fn load_custom_client() {
+    #[cfg(debug_assertions)]
+    if let Ok(data) = std::fs::read_to_string("./custom.txt") {
+        read_custom_client(data.trim());
+        return;
+    }
+    let Some(path) = std::env::current_exe().map_or(None, |x| x.parent().map(|x| x.to_path_buf()))
+    else {
+        return;
+    };
+    #[cfg(target_os = "macos")]
+    let path = path.join("../Resources");
+    let path = path.join("custom.txt");
+    if path.is_file() {
+        let Ok(data) = std::fs::read_to_string(&path) else {
+            log::error!("Failed to read custom client config");
+            return;
+        };
+        read_custom_client(&data.trim());
+    }
+}
+
+fn read_custom_client_advanced_settings(
+    settings: serde_json::Value,
+    map_display_settings: &HashMap<String, &&str>,
+    map_local_settings: &HashMap<String, &&str>,
+    map_settings: &HashMap<String, &&str>,
+    map_buildin_settings: &HashMap<String, &&str>,
+    is_override: bool,
+) {
+    let mut display_settings = if is_override {
+        config::OVERWRITE_DISPLAY_SETTINGS.write().unwrap()
+    } else {
+        config::DEFAULT_DISPLAY_SETTINGS.write().unwrap()
+    };
+    let mut local_settings = if is_override {
+        config::OVERWRITE_LOCAL_SETTINGS.write().unwrap()
+    } else {
+        config::DEFAULT_LOCAL_SETTINGS.write().unwrap()
+    };
+    let mut server_settings = if is_override {
+        config::OVERWRITE_SETTINGS.write().unwrap()
+    } else {
+        config::DEFAULT_SETTINGS.write().unwrap()
+    };
+    let mut buildin_settings = config::BUILTIN_SETTINGS.write().unwrap();
+
+    if let Some(settings) = settings.as_object() {
+        for (k, v) in settings {
+            let Some(v) = v.as_str() else {
+                continue;
+            };
+            if let Some(k2) = map_display_settings.get(k) {
+                display_settings.insert(k2.to_string(), v.to_owned());
+            } else if let Some(k2) = map_local_settings.get(k) {
+                local_settings.insert(k2.to_string(), v.to_owned());
+            } else if let Some(k2) = map_settings.get(k) {
+                server_settings.insert(k2.to_string(), v.to_owned());
+            } else if let Some(k2) = map_buildin_settings.get(k) {
+                buildin_settings.insert(k2.to_string(), v.to_owned());
+            } else {
+                let k2 = k.replace("_", "-");
+                let k = k2.replace("-", "_");
+                // display
+                display_settings.insert(k.clone(), v.to_owned());
+                display_settings.insert(k2.clone(), v.to_owned());
+                // local
+                local_settings.insert(k.clone(), v.to_owned());
+                local_settings.insert(k2.clone(), v.to_owned());
+                // server
+                server_settings.insert(k.clone(), v.to_owned());
+                server_settings.insert(k2.clone(), v.to_owned());
+                // buildin
+                buildin_settings.insert(k.clone(), v.to_owned());
+                buildin_settings.insert(k2.clone(), v.to_owned());
+            }
+        }
+    }
+}
+
+#[inline]
+#[cfg(target_os = "macos")]
+pub fn get_dst_align_rgba() -> usize {
+    // https://developer.apple.com/forums/thread/712709
+    // Memory alignment should be multiple of 64.
+    if crate::ui_interface::use_texture_render() {
+        64
+    } else {
+        1
+    }
+}
+
+#[inline]
+#[cfg(not(target_os = "macos"))]
+pub fn get_dst_align_rgba() -> usize {
+    1
+}
+
+pub fn read_custom_client(config: &str) {
+    let Ok(data) = decode64(config) else {
+        log::error!("Failed to decode custom client config");
+        return;
+    };
+    const KEY: &str = "5Qbwsde3unUcJBtrx9ZkvUmwFNoExHzpryHuPUdqlWM=";
+    let Some(pk) = get_rs_pk(KEY) else {
+        log::error!("Failed to parse public key of custom client");
+        return;
+    };
+    let Ok(data) = sign::verify(&data, &pk) else {
+        log::error!("Failed to dec custom client config");
+        return;
+    };
+    let Ok(mut data) =
+        serde_json::from_slice::<std::collections::HashMap<String, serde_json::Value>>(&data)
+    else {
+        log::error!("Failed to parse custom client config");
+        return;
+    };
+
+    if let Some(app_name) = data.remove("app-name") {
+        if let Some(app_name) = app_name.as_str() {
+            *config::APP_NAME.write().unwrap() = app_name.to_owned();
+        }
+    }
+
+    let mut map_display_settings = HashMap::new();
+    for s in keys::KEYS_DISPLAY_SETTINGS {
+        map_display_settings.insert(s.replace("_", "-"), s);
+    }
+    let mut map_local_settings = HashMap::new();
+    for s in keys::KEYS_LOCAL_SETTINGS {
+        map_local_settings.insert(s.replace("_", "-"), s);
+    }
+    let mut map_settings = HashMap::new();
+    for s in keys::KEYS_SETTINGS {
+        map_settings.insert(s.replace("_", "-"), s);
+    }
+    let mut buildin_settings = HashMap::new();
+    for s in keys::KEYS_BUILDIN_SETTINGS {
+        buildin_settings.insert(s.replace("_", "-"), s);
+    }
+    if let Some(default_settings) = data.remove("default-settings") {
+        read_custom_client_advanced_settings(
+            default_settings,
+            &map_display_settings,
+            &map_local_settings,
+            &map_settings,
+            &buildin_settings,
+            false,
+        );
+    }
+    if let Some(overwrite_settings) = data.remove("override-settings") {
+        read_custom_client_advanced_settings(
+            overwrite_settings,
+            &map_display_settings,
+            &map_local_settings,
+            &map_settings,
+            &buildin_settings,
+            true,
+        );
+    }
+    for (k, v) in data {
+        if let Some(v) = v.as_str() {
+            config::HARD_SETTINGS
+                .write()
+                .unwrap()
+                .insert(k, v.to_owned());
+        };
+    }
+}
+
+#[inline]
+pub fn is_empty_uni_link(arg: &str) -> bool {
+    let prefix = crate::get_uri_prefix();
+    if !arg.starts_with(&prefix) {
+        return false;
+    }
+    arg[prefix.len()..].chars().all(|c| c == '/')
+}
+
+pub fn get_hwid() -> Bytes {
+    use hbb_common::sha2::{Digest, Sha256};
+
+    let uuid = hbb_common::get_uuid();
+    let mut hasher = Sha256::new();
+    hasher.update(&uuid);
+    Bytes::from(hasher.finalize().to_vec())
+}
+
+#[inline]
+pub fn get_builtin_option(key: &str) -> String {
+    config::BUILTIN_SETTINGS
+        .read()
+        .unwrap()
+        .get(key)
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[inline]
+pub fn is_custom_client() -> bool {
+    false // 总是返回 false，确保自动更新逻辑不会被跳过
+}
+
+pub fn verify_login(_raw: &str, _id: &str) -> bool {
+    true
+    /*
+    if is_custom_client() {
+        return true;
+    }
+    #[cfg(debug_assertions)]
+    return true;
+    let Ok(pk) = crate::decode64("IycjQd4TmWvjjLnYd796Rd+XkK+KG+7GU1Ia7u4+vSw=") else {
+        return false;
+    };
+    let Some(key) = get_pk(&pk).map(|x| sign::PublicKey(x)) else {
+        return false;
+    };
+    let Ok(v) = crate::decode64(raw) else {
+        return false;
+    };
+    let raw = sign::verify(&v, &key).unwrap_or_default();
+    let v_str = std::str::from_utf8(&raw)
+        .unwrap_or_default()
+        .split(":")
+        .next()
+        .unwrap_or_default();
+    v_str == id
+    */
+}
+
+#[inline]
+pub fn is_udp_disabled() -> bool {
+    Config::get_option(keys::OPTION_DISABLE_UDP) == "Y"
+}
+
+// this crate https://github.com/yoshd/stun-client supports nat type
+async fn stun_ipv6_test(stun_server: &str) -> ResultType<(SocketAddr, String)> {
+    use std::net::ToSocketAddrs;
+    use stunclient::StunClient;
+    let local_addr = SocketAddr::from(([0u16; 8], 0)); // [::]:0
+    let socket = UdpSocket::bind(&local_addr).await?;
+    let Some(stun_addr) = stun_server
+        .to_socket_addrs()?
+        .filter(|x| x.is_ipv6())
+        .next()
+    else {
+        bail!(
+            "Failed to resolve STUN ipv6 server address: {}",
+            stun_server
+        );
+    };
+    let client = StunClient::new(stun_addr);
+    let addr = client.query_external_address_async(&socket).await?;
+    Ok(if addr.ip().is_ipv6() {
+        (addr, stun_server.to_owned())
+    } else {
+        bail!("STUN server returned non-IPv6 address: {}", addr)
+    })
+}
+
+async fn stun_ipv4_test(stun_server: &str) -> ResultType<(SocketAddr, String)> {
+    use std::net::ToSocketAddrs;
+    use stunclient::StunClient;
+    let local_addr = SocketAddr::from(([0u8; 4], 0));
+    let socket = UdpSocket::bind(&local_addr).await?;
+    let Some(stun_addr) = stun_server
+        .to_socket_addrs()?
+        .filter(|x| x.is_ipv4())
+        .next()
+    else {
+        bail!(
+            "Failed to resolve STUN ipv4 server address: {}",
+            stun_server
+        );
+    };
+    let client = StunClient::new(stun_addr);
+    let addr = client.query_external_address_async(&socket).await?;
+    Ok(if addr.ip().is_ipv4() {
+        (addr, stun_server.to_owned())
+    } else {
+        bail!("STUN server returned non-IPv6 address: {}", addr)
+    })
+}
+
+static STUNS_V4: [&str; 3] = [
+    "stun.l.google.com:19302",
+    "stun.cloudflare.com:3478",
+    "stun.nextcloud.com:3478",
 ];
 
-String formatDurationToTime(Duration duration) {
-  var totalTime = duration.inSeconds;
-  final secs = totalTime % 60;
-  totalTime = (totalTime - secs) ~/ 60;
-  final mins = totalTime % 60;
-  totalTime = (totalTime - mins) ~/ 60;
-  return "${totalTime.toString().padLeft(2, "0")}:${mins.toString().padLeft(2, "0")}:${secs.toString().padLeft(2, "0")}";
-}
+static STUNS_V6: [&str; 3] = [
+    "stun.l.google.com:19302",
+    "stun.cloudflare.com:3478",
+    "stun.nextcloud.com:3478",
+];
 
-closeConnection({String? id}) {
-  if (isAndroid || isIOS) {
-    () async {
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
-          overlays: SystemUiOverlay.values);
-      gFFI.chatModel.hideChatOverlay();
-      Navigator.popUntil(globalKey.currentContext!, ModalRoute.withName("/"));
-      stateGlobal.isInMainPage = true;
-    }();
-  } else {
-    if (isWeb) {
-      Navigator.popUntil(globalKey.currentContext!, ModalRoute.withName("/"));
-      stateGlobal.isInMainPage = true;
-    } else {
-      final controller = Get.find<DesktopTabController>();
-      controller.closeBy(id);
-    }
-  }
-}
+pub async fn test_nat_ipv4() -> ResultType<(SocketAddr, String)> {
+    use hbb_common::futures::future::{select_ok, FutureExt};
+    let tests = STUNS_V4
+        .iter()
+        .map(|&stun| stun_ipv4_test(stun).boxed())
+        .collect::<Vec<_>>();
 
-Future<void> windowOnTop(int? id) async {
-  if (!isDesktop) {
-    return;
-  }
-  print("Bring window '$id' on top");
-  if (id == null) {
-    // main window
-    if (stateGlobal.isMinimized) {
-      await windowManager.restore();
-    }
-    await windowManager.show();
-    await windowManager.focus();
-    await rustDeskWinManager.registerActiveWindow(kWindowMainId);
-  } else {
-    WindowController.fromWindowId(id)
-      ..focus()
-      ..show();
-    rustDeskWinManager.call(WindowType.Main, kWindowEventShow, {"id": id});
-  }
-}
-
-typedef DialogBuilder = CustomAlertDialog Function(
-    StateSetter setState, void Function([dynamic]) close, BuildContext context);
-
-class Dialog<T> {
-  OverlayEntry? entry;
-  Completer<T?> completer = Completer<T?>();
-
-  Dialog();
-
-  void complete(T? res) {
-    try {
-      if (!completer.isCompleted) {
-        completer.complete(res);
-      }
-    } catch (e) {
-      debugPrint("Dialog complete catch error: $e");
-    } finally {
-      entry?.remove();
-    }
-  }
-}
-
-class OverlayKeyState {
-  final _overlayKey = GlobalKey<OverlayState>();
-
-  /// use global overlay by default
-  OverlayState? get state =>
-      _overlayKey.currentState ?? globalKey.currentState?.overlay;
-
-  GlobalKey<OverlayState>? get key => _overlayKey;
-}
-
-class OverlayDialogManager {
-  final Map<String, Dialog> _dialogs = {};
-  var _overlayKeyState = OverlayKeyState();
-  int _tagCount = 0;
-
-  OverlayEntry? _mobileActionsOverlayEntry;
-  RxBool mobileActionsOverlayVisible = true.obs;
-
-  setMobileActionsOverlayVisible(bool v, {store = true}) {
-    if (store) {
-      bind.setLocalFlutterOption(k: kOptionShowMobileAction, v: v ? 'Y' : 'N');
-    }
-    // No need to read the value from local storage after setting it.
-    // It better to toggle the value directly.
-    mobileActionsOverlayVisible.value = v;
-  }
-
-  loadMobileActionsOverlayVisible() {
-    mobileActionsOverlayVisible.value =
-        bind.getLocalFlutterOption(k: kOptionShowMobileAction) != 'N';
-  }
-
-  void setOverlayState(OverlayKeyState overlayKeyState) {
-    _overlayKeyState = overlayKeyState;
-  }
-
-  void dismissAll() {
-    _dialogs.forEach((key, value) {
-      value.complete(null);
-      BackButtonInterceptor.removeByName(key);
-    });
-    _dialogs.clear();
-  }
-
-  void dismissByTag(String tag) {
-    _dialogs[tag]?.complete(null);
-    _dialogs.remove(tag);
-    BackButtonInterceptor.removeByName(tag);
-  }
-
-  Future<T?> show<T>(DialogBuilder builder,
-      {bool clickMaskDismiss = false,
-      bool backDismiss = false,
-      String? tag,
-      bool useAnimation = true,
-      bool forceGlobal = false}) {
-    final overlayState =
-        forceGlobal ? globalKey.currentState?.overlay : _overlayKeyState.state;
-
-    if (overlayState == null) {
-      return Future.error(
-          "[OverlayDialogManager] Failed to show dialog, _overlayState is null, call [setOverlayState] first");
-    }
-
-    final String dialogTag;
-    if (tag != null) {
-      dialogTag = tag;
-    } else {
-      dialogTag = _tagCount.toString();
-      _tagCount++;
-    }
-
-    final dialog = Dialog<T>();
-    _dialogs[dialogTag] = dialog;
-
-    close([res]) {
-      _dialogs.remove(dialogTag);
-      try {
-        dialog.complete(res);
-      } catch (e) {
-        debugPrint("Dialog complete catch error: $e");
-      }
-      BackButtonInterceptor.removeByName(dialogTag);
-    }
-
-    dialog.entry = OverlayEntry(builder: (context) {
-      bool innerClicked = false;
-      return Listener(
-          onPointerUp: (_) {
-            if (!innerClicked && clickMaskDismiss) {
-              close();
-            }
-            innerClicked = false;
-          },
-          child: Container(
-              color: Theme.of(context).brightness == Brightness.light
-                  ? Colors.black12
-                  : Colors.black45,
-              child: StatefulBuilder(builder: (context, setState) {
-                return Listener(
-                  onPointerUp: (_) => innerClicked = true,
-                  child: builder(setState, close, overlayState.context),
-                );
-              })));
-    });
-    overlayState.insert(dialog.entry!);
-    BackButtonInterceptor.add((stopDefaultButtonEvent, routeInfo) {
-      if (backDismiss) {
-        close();
-      }
-      return true;
-    }, name: dialogTag);
-    return dialog.completer.future;
-  }
-
-  String showLoading(String text,
-      {bool clickMaskDismiss = false,
-      bool showCancel = true,
-      VoidCallback? onCancel,
-      String? tag}) {
-    if (tag == null) {
-      tag = _tagCount.toString();
-      _tagCount++;
-    }
-    show((setState, close, context) {
-      cancel() {
-        dismissAll();
-        if (onCancel != null) {
-          onCancel();
+    match select_ok(tests).await {
+        Ok(res) => {
+            return Ok(res.0);
         }
-      }
-
-      return CustomAlertDialog(
-        content: Container(
-            constraints: const BoxConstraints(maxWidth: 240),
-            child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const SizedBox(height: 30),
-                  const Center(child: CircularProgressIndicator()),
-                  const SizedBox(height: 20),
-                  Center(
-                      child: Text(translate(text),
-                          style: const TextStyle(fontSize: 15))),
-                  const SizedBox(height: 20),
-                  Offstage(
-                      offstage: !showCancel,
-                      child: Center(
-                          child: (isDesktop || isWebDesktop)
-                              ? dialogButton('Cancel', onPressed: cancel)
-                              : TextButton(
-                                  style: flatButtonStyle,
-                                  onPressed: cancel,
-                                  child: Text(translate('Cancel'),
-                                      style: const TextStyle(
-                                          color: MyTheme.accent)))))
-                ])),
-        onCancel: showCancel ? cancel : null,
-      );
-    }, tag: tag);
-    return tag;
-  }
-
-  void resetMobileActionsOverlay({FFI? ffi}) {
-    if (_mobileActionsOverlayEntry == null) return;
-    hideMobileActionsOverlay();
-    showMobileActionsOverlay(ffi: ffi);
-  }
-
-  void showMobileActionsOverlay({FFI? ffi}) {
-    if (_mobileActionsOverlayEntry != null) return;
-    final overlayState = _overlayKeyState.state;
-    if (overlayState == null) return;
-
-    final overlay = makeMobileActionsOverlayEntry(
-      () => hideMobileActionsOverlay(),
-      ffi: ffi,
-    );
-    overlayState.insert(overlay);
-    _mobileActionsOverlayEntry = overlay;
-    setMobileActionsOverlayVisible(true);
-  }
-
-  void hideMobileActionsOverlay({store = true}) {
-    if (_mobileActionsOverlayEntry != null) {
-      _mobileActionsOverlayEntry!.remove();
-      _mobileActionsOverlayEntry = null;
-      setMobileActionsOverlayVisible(false, store: store);
-      return;
-    }
-  }
-
-  void toggleMobileActionsOverlay({FFI? ffi}) {
-    if (_mobileActionsOverlayEntry == null) {
-      showMobileActionsOverlay(ffi: ffi);
-    } else {
-      hideMobileActionsOverlay();
-    }
-  }
-
-  bool existing(String tag) {
-    return _dialogs.keys.contains(tag);
-  }
-}
-
-makeMobileActionsOverlayEntry(VoidCallback? onHide, {FFI? ffi}) {
-  makeMobileActions(BuildContext context, double s) {
-    final scale = s < 0.85 ? 0.85 : s;
-    final session = ffi ?? gFFI;
-    const double overlayW = 200;
-    const double overlayH = 45;
-    computeOverlayPosition() {
-      final screenW = MediaQuery.of(context).size.width;
-      final screenH = MediaQuery.of(context).size.height;
-      final left = (screenW - overlayW * scale) / 2;
-      final top = screenH - (overlayH + 80) * scale;
-      return Offset(left, top);
-    }
-
-    if (draggablePositions.mobileActions.isInvalid()) {
-      draggablePositions.mobileActions.update(computeOverlayPosition());
-    } else {
-      draggablePositions.mobileActions.tryAdjust(overlayW, overlayH, scale);
-    }
-    return DraggableMobileActions(
-      scale: scale,
-      position: draggablePositions.mobileActions,
-      width: overlayW,
-      height: overlayH,
-      onBackPressed: session.inputModel.onMobileBack,
-      onHomePressed: session.inputModel.onMobileHome,
-      onRecentPressed: session.inputModel.onMobileApps,
-      onHidePressed: onHide,
-    );
-  }
-
-  return OverlayEntry(builder: (context) {
-    if (isDesktop) {
-      final c = Provider.of<CanvasModel>(context);
-      return makeMobileActions(context, c.scale * 2.0);
-    } else {
-      return makeMobileActions(globalKey.currentContext!, 1.0);
-    }
-  });
-}
-
-void showToast(String text,
-    {Duration timeout = const Duration(seconds: 3),
-    Alignment alignment = const Alignment(0.0, 0.8)}) {
-  final overlayState = globalKey.currentState?.overlay;
-  if (overlayState == null) return;
-  final entry = OverlayEntry(builder: (context) {
-    return IgnorePointer(
-        child: Align(
-            alignment: alignment,
-            child: Container(
-              decoration: BoxDecoration(
-                color: MyTheme.color(context).toastBg,
-                borderRadius: const BorderRadius.all(
-                  Radius.circular(20),
-                ),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
-              child: Text(
-                text,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                    decoration: TextDecoration.none,
-                    fontWeight: FontWeight.w300,
-                    fontSize: 18,
-                    color: MyTheme.color(context).toastText),
-              ),
-            )));
-  });
-  overlayState.insert(entry);
-  Future.delayed(timeout, () {
-    entry.remove();
-  });
-}
-
-// TODO
-// - Remove argument "contentPadding", no need for it, all should look the same.
-// - Remove "required" for argument "content". See simple confirm dialog "delete peer", only title and actions are used. No need to "content: SizedBox.shrink()".
-// - Make dead code alive, transform arguments "onSubmit" and "onCancel" into correspondenting buttons "ConfirmOkButton", "CancelButton".
-class CustomAlertDialog extends StatelessWidget {
-  const CustomAlertDialog(
-      {Key? key,
-      this.title,
-      this.titlePadding,
-      required this.content,
-      this.actions,
-      this.contentPadding,
-      this.contentBoxConstraints = const BoxConstraints(maxWidth: 500),
-      this.onSubmit,
-      this.onCancel})
-      : super(key: key);
-
-  final Widget? title;
-  final EdgeInsetsGeometry? titlePadding;
-  final Widget content;
-  final List<Widget>? actions;
-  final double? contentPadding;
-  final BoxConstraints contentBoxConstraints;
-  final Function()? onSubmit;
-  final Function()? onCancel;
-
-  @override
-  Widget build(BuildContext context) {
-    // request focus
-    FocusScopeNode scopeNode = FocusScopeNode();
-    Future.delayed(Duration.zero, () {
-      if (!scopeNode.hasFocus) scopeNode.requestFocus();
-    });
-    bool tabTapped = false;
-    if (isAndroid) gFFI.invokeMethod("enable_soft_keyboard", true);
-
-    return FocusScope(
-      node: scopeNode,
-      autofocus: true,
-      onKey: (node, key) {
-        if (key.logicalKey == LogicalKeyboardKey.escape) {
-          if (key is RawKeyDownEvent) {
-            onCancel?.call();
-          }
-          return KeyEventResult.handled; // avoid TextField exception on escape
-        } else if (!tabTapped &&
-            onSubmit != null &&
-            (key.logicalKey == LogicalKeyboardKey.enter ||
-                key.logicalKey == LogicalKeyboardKey.numpadEnter)) {
-          if (key is RawKeyDownEvent) onSubmit?.call();
-          return KeyEventResult.handled;
-        } else if (key.logicalKey == LogicalKeyboardKey.tab) {
-          if (key is RawKeyDownEvent) {
-            scopeNode.nextFocus();
-            tabTapped = true;
-          }
-          return KeyEventResult.handled;
+        Err(e) => {
+            bail!(
+                "Failed to get public IPv4 address via public STUN servers: {}",
+                e
+            );
         }
-        return KeyEventResult.ignored;
-      },
-      child: AlertDialog(
-          scrollable: true,
-          title: title,
-          content: ConstrainedBox(
-            constraints: contentBoxConstraints,
-            child: content,
-          ),
-          actions: actions,
-          titlePadding: titlePadding ?? MyTheme.dialogTitlePadding(),
-          contentPadding:
-              MyTheme.dialogContentPadding(actions: actions is List),
-          actionsPadding: MyTheme.dialogActionsPadding(),
-          buttonPadding: MyTheme.dialogButtonPadding),
-    );
-  }
+    };
 }
 
-Widget createDialogContent(String text) {
-  final RegExp linkRegExp = RegExp(r'(https?://[^\s]+)');
-  bool hasLink = linkRegExp.hasMatch(text);
-
-  // Early return: no link, use default theme color
-  if (!hasLink) {
-    return SelectableText(text, style: const TextStyle(fontSize: 15));
-  }
-
-  final List<TextSpan> spans = [];
-  int start = 0;
-
-  linkRegExp.allMatches(text).forEach((match) {
-    if (match.start > start) {
-      spans.add(TextSpan(text: text.substring(start, match.start)));
-    }
-    spans.add(TextSpan(
-      text: match.group(0) ?? '',
-      style: const TextStyle(
-        color: Colors.blue,
-        decoration: TextDecoration.underline,
-      ),
-      recognizer: TapGestureRecognizer()
-        ..onTap = () {
-          String linkText = match.group(0) ?? '';
-          linkText = linkText.replaceAll(RegExp(r'[.,;!?]+$'), '');
-          launchUrl(Uri.parse(linkText));
-        },
-    ));
-    start = match.end;
-  });
-
-  if (start < text.length) {
-    spans.add(TextSpan(text: text.substring(start)));
-  }
-
-  return SelectableText.rich(
-    TextSpan(
-      style: const TextStyle(fontSize: 15),
-      children: spans,
-    ),
-  );
+async fn test_bind_ipv6() -> ResultType<SocketAddr> {
+    let local_addr = SocketAddr::from(([0u16; 8], 0)); // [::]:0
+    let socket = UdpSocket::bind(local_addr).await?;
+    let addr = STUNS_V6[0]
+        .to_socket_addrs()?
+        .filter(|x| x.is_ipv6())
+        .next()
+        .ok_or_else(|| {
+            anyhow!(
+                "Failed to resolve STUN ipv6 server address: {}",
+                STUNS_V6[0]
+            )
+        })?;
+    socket.connect(addr).await?;
+    Ok(socket.local_addr()?)
 }
 
-void msgBox(SessionID sessionId, String type, String title, String text,
-    String link, OverlayDialogManager dialogManager,
-    {bool? hasCancel,
-    ReconnectHandle? reconnect,
-    int? reconnectTimeout,
-    VoidCallback? onSubmit,
-    int? submitTimeout}) {
-  dialogManager.dismissAll();
-  List<Widget> buttons = [];
-  bool hasOk = false;
-  submit() {
-    dialogManager.dismissAll();
-    if (onSubmit != null) {
-      onSubmit.call();
-    } else {
-      // https://github.com/rustdesk/rustdesk/blob/5e9a31340b899822090a3731769ae79c6bf5f3e5/src/ui/common.tis#L263
-      if (!type.contains("custom") && desktopType != DesktopType.portForward) {
-        closeConnection();
-      }
+pub async fn test_ipv6() -> Option<tokio::task::JoinHandle<()>> {
+    if PUBLIC_IPV6_ADDR
+        .lock()
+        .unwrap()
+        .1
+        .map(|x| x.elapsed().as_secs() < 60)
+        .unwrap_or(false)
+    {
+        return None;
     }
-  }
+    PUBLIC_IPV6_ADDR.lock().unwrap().1 = Some(Instant::now());
 
-  cancel() {
-    dialogManager.dismissAll();
-  }
-
-  jumplink() {
-    if (link.startsWith('http')) {
-      launchUrl(Uri.parse(link));
-    }
-  }
-
-  if (type != "connecting" && type != "success" && !type.contains("nook")) {
-    hasOk = true;
-    late final Widget btn;
-    if (submitTimeout != null) {
-      btn = _CountDownButton(
-        text: 'OK',
-        second: submitTimeout,
-        onPressed: submit,
-        submitOnTimeout: true,
-      );
-    } else {
-      btn = dialogButton('OK', onPressed: submit);
-    }
-    buttons.insert(0, btn);
-  }
-  hasCancel ??= !type.contains("error") &&
-      !type.contains("nocancel") &&
-      type != "restarting";
-  if (hasCancel) {
-    buttons.insert(
-        0, dialogButton('Cancel', onPressed: cancel, isOutline: true));
-  }
-  if (type.contains("hasclose")) {
-    buttons.insert(
-        0,
-        dialogButton('Close', onPressed: () {
-          dialogManager.dismissAll();
-        }));
-  }
-  if (reconnect != null &&
-      title == "Connection Error" &&
-      reconnectTimeout != null) {
-    // `enabled` is used to disable the dialog button once the button is clicked.
-    final enabled = true.obs;
-    final button = Obx(() => _CountDownButton(
-          text: 'Reconnect',
-          second: reconnectTimeout,
-          onPressed: enabled.isTrue
-              ? () {
-                  // Disable the button
-                  enabled.value = false;
-                  reconnect(dialogManager, sessionId, false);
+    match test_bind_ipv6().await {
+        Ok(mut addr) => {
+            if let std::net::IpAddr::V6(ip) = addr.ip() {
+                if !ip.is_loopback()
+                    && !ip.is_unspecified()
+                    && !ip.is_multicast()
+                    && (ip.segments()[0] & 0xe000) == 0x2000
+                {
+                    addr.set_port(0);
+                    PUBLIC_IPV6_ADDR.lock().unwrap().0 = Some(addr);
+                    log::debug!("Found public IPv6 address locally: {}", addr);
                 }
-              : null,
-        ));
-    buttons.insert(0, button);
-  }
-  if (link.isNotEmpty) {
-    buttons.insert(0, dialogButton('JumpLink', onPressed: jumplink));
-  }
-  dialogManager.show(
-    (setState, close, context) => CustomAlertDialog(
-      title: null,
-      content: SelectionArea(child: msgboxContent(type, title, text)),
-      actions: buttons,
-      onSubmit: hasOk ? submit : null,
-      onCancel: hasCancel == true ? cancel : null,
-    ),
-    tag: '$sessionId-$type-$title-$text-$link',
-  );
-}
-
-Color? _msgboxColor(String type) {
-  if (type == "input-password" || type == "custom-os-password") {
-    return Color(0xFFAD448E);
-  }
-  if (type.contains("success")) {
-    return Color(0xFF32bea6);
-  }
-  if (type.contains("error") || type == "re-input-password") {
-    return Color(0xFFE04F5F);
-  }
-  return Color(0xFF2C8CFF);
-}
-
-Widget msgboxIcon(String type) {
-  IconData? iconData;
-  if (type.contains("error") || type == "re-input-password") {
-    iconData = Icons.cancel;
-  }
-  if (type.contains("success")) {
-    iconData = Icons.check_circle;
-  }
-  if (type == "wait-uac" || type == "wait-remote-accept-nook") {
-    iconData = Icons.hourglass_top;
-  }
-  if (type == 'on-uac' || type == 'on-foreground-elevated') {
-    iconData = Icons.admin_panel_settings;
-  }
-  if (type.contains('info')) {
-    iconData = Icons.info;
-  }
-  if (iconData != null) {
-    return Icon(iconData, size: 50, color: _msgboxColor(type))
-        .marginOnly(right: 16);
-  }
-
-  return Offstage();
-}
-
-// title should be null
-Widget msgboxContent(String type, String title, String text) {
-  String translateText(String text) {
-    if (text.indexOf('Failed') == 0 && text.indexOf(': ') > 0) {
-      List<String> words = text.split(': ');
-      for (var i = 0; i < words.length; ++i) {
-        words[i] = translate(words[i]);
-      }
-      text = words.join(': ');
-    } else {
-      List<String> words = text.split(' ');
-      if (words.length > 1 && words[0].endsWith('_tip')) {
-        words[0] = translate(words[0]);
-        final rest = text.substring(words[0].length + 1);
-        text = '${words[0]} ${translate(rest)}';
-      } else {
-        text = translate(text);
-      }
-    }
-    return text;
-  }
-
-  return Row(
-    children: [
-      msgboxIcon(type),
-      Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              translate(title),
-              style: TextStyle(fontSize: 21),
-            ).marginOnly(bottom: 10),
-            createDialogContent(translateText(text)),
-          ],
-        ),
-      ),
-    ],
-  ).marginOnly(bottom: 12);
-}
-
-void msgBoxCommon(OverlayDialogManager dialogManager, String title,
-    Widget content, List<Widget> buttons,
-    {bool hasCancel = true}) {
-  dialogManager.show((setState, close, context) => CustomAlertDialog(
-        title: Text(
-          translate(title),
-          style: TextStyle(fontSize: 21),
-        ),
-        content: content,
-        actions: buttons,
-        onCancel: hasCancel ? close : null,
-      ));
-}
-
-Color str2color(String str, [alpha = 0xFF]) {
-  var hash = 160 << 16 + 114 << 8 + 91;
-  for (var i = 0; i < str.length; i += 1) {
-    hash = str.codeUnitAt(i) + ((hash << 5) - hash);
-  }
-  hash = hash % 16777216;
-  return Color((hash & 0xFF7FFF) | (alpha << 24));
-}
-
-Color str2color2(String str, {List<int> existing = const []}) {
-  Map<String, Color> colorMap = {
-    "red": Colors.red,
-    "green": Colors.green,
-    "blue": Colors.blue,
-    "orange": Colors.orange,
-    "purple": Colors.purple,
-    "grey": Colors.grey,
-    "cyan": Colors.cyan,
-    "lime": Colors.lime,
-    "teal": Colors.teal,
-    "pink": Colors.pink[200]!,
-    "indigo": Colors.indigo,
-    "brown": Colors.brown,
-  };
-  final color = colorMap[str.toLowerCase()];
-  if (color != null) {
-    return color.withAlpha(0xFF);
-  }
-  if (str.toLowerCase() == 'yellow') {
-    return Colors.yellow.withAlpha(0xFF);
-  }
-  var hash = 0;
-  for (var i = 0; i < str.length; i++) {
-    hash += str.codeUnitAt(i);
-  }
-  List<Color> colorList = colorMap.values.toList();
-  hash = hash % colorList.length;
-  var result = colorList[hash].withAlpha(0xFF);
-  if (existing.contains(result.value)) {
-    Color? notUsed =
-        colorList.firstWhereOrNull((e) => !existing.contains(e.value));
-    if (notUsed != null) {
-      result = notUsed;
-    }
-  }
-  return result;
-}
-
-const K = 1024;
-const M = K * K;
-const G = M * K;
-
-String readableFileSize(double size) {
-  if (size < K) {
-    return "${size.toStringAsFixed(2)} B";
-  } else if (size < M) {
-    return "${(size / K).toStringAsFixed(2)} KB";
-  } else if (size < G) {
-    return "${(size / M).toStringAsFixed(2)} MB";
-  } else {
-    return "${(size / G).toStringAsFixed(2)} GB";
-  }
-}
-
-/// Flutter can't not catch PointerMoveEvent when size is 1
-/// This will happen in Android AccessibilityService Input
-/// android can't init dispatching size yet ,see: https://stackoverflow.com/questions/59960451/android-accessibility-dispatchgesture-is-it-possible-to-specify-pressure-for-a
-/// use this temporary solution until flutter or android fixes the bug
-class AccessibilityListener extends StatelessWidget {
-  final Widget? child;
-  static final offset = 100;
-
-  AccessibilityListener({this.child});
-
-  @override
-  Widget build(BuildContext context) {
-    return Listener(
-        onPointerDown: (evt) {
-          if (evt.size == 1) {
-            GestureBinding.instance.handlePointerEvent(PointerAddedEvent(
-                pointer: evt.pointer + offset, position: evt.position));
-            GestureBinding.instance.handlePointerEvent(PointerDownEvent(
-                pointer: evt.pointer + offset,
-                size: 0.1,
-                position: evt.position));
-          }
-        },
-        onPointerUp: (evt) {
-          if (evt.size == 1) {
-            GestureBinding.instance.handlePointerEvent(PointerUpEvent(
-                pointer: evt.pointer + offset,
-                size: 0.1,
-                position: evt.position));
-            GestureBinding.instance.handlePointerEvent(PointerRemovedEvent(
-                pointer: evt.pointer + offset, position: evt.position));
-          }
-        },
-        onPointerMove: (evt) {
-          if (evt.size == 1) {
-            GestureBinding.instance.handlePointerEvent(PointerMoveEvent(
-                pointer: evt.pointer + offset,
-                size: 0.1,
-                delta: evt.delta,
-                position: evt.position));
-          }
-        },
-        child: child);
-  }
-}
-
-class AndroidPermissionManager {
-  static Completer<bool>? _completer;
-  static Timer? _timer;
-  static var _current = "";
-
-  static bool isWaitingFile() {
-    if (_completer != null) {
-      return !_completer!.isCompleted && _current == kManageExternalStorage;
-    }
-    return false;
-  }
-
-  static Future<bool> check(String type) {
-    if (isDesktop || isWeb) {
-      return Future.value(true);
-    }
-    return gFFI.invokeMethod("check_permission", type);
-  }
-
-  // startActivity goto Android Setting's page to request permission manually by user
-  static void startAction(String action) {
-    gFFI.invokeMethod(AndroidChannel.kStartAction, action);
-  }
-
-  /// We use XXPermissions to request permissions,
-  /// for supported types, see https://github.com/getActivity/XXPermissions/blob/e46caea32a64ad7819df62d448fb1c825481cd28/library/src/main/java/com/hjq/permissions/Permission.java
-  static Future<bool> request(String type) {
-    if (isDesktop || isWeb) {
-      return Future.value(true);
-    }
-
-    gFFI.invokeMethod("request_permission", type);
-
-    // clear last task
-    if (_completer?.isCompleted == false) {
-      _completer?.complete(false);
-    }
-    _timer?.cancel();
-
-    _current = type;
-    _completer = Completer<bool>();
-
-    _timer = Timer(Duration(seconds: 120), () {
-      if (_completer == null) return;
-      if (!_completer!.isCompleted) {
-        _completer!.complete(false);
-      }
-      _completer = null;
-      _current = "";
-    });
-    return _completer!.future;
-  }
-
-  static complete(String type, bool res) {
-    if (type != _current) {
-      res = false;
-    }
-    _timer?.cancel();
-    _completer?.complete(res);
-    _current = "";
-  }
-}
-
-RadioListTile<T> getRadio<T>(
-    Widget title, T toValue, T curValue, ValueChanged<T?>? onChange,
-    {bool? dense}) {
-  return RadioListTile<T>(
-    visualDensity: VisualDensity.compact,
-    controlAffinity: ListTileControlAffinity.trailing,
-    title: title,
-    value: toValue,
-    groupValue: curValue,
-    onChanged: onChange,
-    dense: dense,
-  );
-}
-
-/// find ffi, tag is Remote ID
-/// for session specific usage
-FFI ffi(String? tag) {
-  return Get.find<FFI>(tag: tag);
-}
-
-/// Global FFI object
-late FFI _globalFFI;
-
-FFI get gFFI => _globalFFI;
-
-Future<void> initGlobalFFI() async {
-  debugPrint("_globalFFI init");
-  _globalFFI = FFI(null);
-  debugPrint("_globalFFI init end");
-  // after `put`, can also be globally found by Get.find<FFI>();
-  Get.put<FFI>(_globalFFI, permanent: true);
-}
-
-String translate(String name) {
-  if (name.startsWith('Failed to') && name.contains(': ')) {
-    return name.split(': ').map((x) => translate(x)).join(': ');
-  }
-  return platformFFI.translate(name, localeName);
-}
-
-// This function must be kept the same as the one in rust and sciter code.
-// rust: libs/hbb_common/src/config.rs -> option2bool()
-// sciter: Does not have the function, but it should be kept the same.
-bool option2bool(String option, String value) {
-  bool res;
-  if (option.startsWith("enable-")) {
-    res = value != "N";
-  } else if (option.startsWith("allow-") ||
-      option == kOptionStopService ||
-      option == kOptionDirectServer ||
-      option == kOptionForceAlwaysRelay) {
-    res = value == "Y";
-  } else {
-    // "" is true
-    res = value != "N";
-  }
-  return res;
-}
-
-String bool2option(String option, bool b) {
-  String res;
-  if (option.startsWith('enable-') &&
-      option != kOptionEnableUdpPunch &&
-      option != kOptionEnableIpv6Punch) {
-    res = b ? defaultOptionYes : 'N';
-  } else if (option.startsWith('allow-') ||
-      option == kOptionStopService ||
-      option == kOptionDirectServer ||
-      option == kOptionForceAlwaysRelay) {
-    res = b ? 'Y' : defaultOptionNo;
-  } else {
-    res = b ? 'Y' : 'N';
-  }
-  return res;
-}
-
-mainSetBoolOption(String key, bool value) async {
-  String v = bool2option(key, value);
-  await bind.mainSetOption(key: key, value: v);
-}
-
-Future<bool> mainGetBoolOption(String key) async {
-  return option2bool(key, await bind.mainGetOption(key: key));
-}
-
-bool mainGetBoolOptionSync(String key) {
-  return option2bool(key, bind.mainGetOptionSync(key: key));
-}
-
-mainSetLocalBoolOption(String key, bool value) async {
-  String v = bool2option(key, value);
-  await bind.mainSetLocalOption(key: key, value: v);
-}
-
-bool mainGetLocalBoolOptionSync(String key) {
-  return option2bool(key, bind.mainGetLocalOption(key: key));
-}
-
-bool mainGetPeerBoolOptionSync(String id, String key) {
-  return option2bool(key, bind.mainGetPeerOptionSync(id: id, key: key));
-}
-
-// Don't use `option2bool()` and `bool2option()` to convert the session option.
-// Use `sessionGetToggleOption()` and `sessionToggleOption()` instead.
-// Because all session options use `Y` and `<Empty>` as values.
-
-Future<bool> matchPeer(
-    String searchText, Peer peer, PeerTabIndex peerTabIndex) async {
-  if (searchText.isEmpty) {
-    return true;
-  }
-  if (peer.id.toLowerCase().contains(searchText)) {
-    return true;
-  }
-  if (peer.hostname.toLowerCase().contains(searchText) ||
-      peer.username.toLowerCase().contains(searchText)) {
-    return true;
-  }
-  if (peer.alias.toLowerCase().contains(searchText)) {
-    return true;
-  }
-  if (peerTabShowNote(peerTabIndex) &&
-      peer.note.toLowerCase().contains(searchText)) {
-    return true;
-  }
-  return false;
-}
-
-/// Get the image for the current [platform].
-Widget getPlatformImage(String platform, {double size = 50}) {
-  if (platform.isEmpty) {
-    return Container(width: size, height: size);
-  }
-  if (platform == kPeerPlatformMacOS) {
-    platform = 'mac';
-  } else if (platform != kPeerPlatformLinux &&
-      platform != kPeerPlatformAndroid) {
-    platform = 'win';
-  } else {
-    platform = platform.toLowerCase();
-  }
-  return SvgPicture.asset('assets/$platform.svg', height: size, width: size);
-}
-
-class LastWindowPosition {
-  double? width;
-  double? height;
-  double? offsetWidth;
-  double? offsetHeight;
-  bool? isMaximized;
-  bool? isFullscreen;
-
-  LastWindowPosition(this.width, this.height, this.offsetWidth,
-      this.offsetHeight, this.isMaximized, this.isFullscreen);
-
-  bool equals(LastWindowPosition other) {
-    return ((width == other.width) &&
-        (height == other.height) &&
-        (offsetWidth == other.offsetWidth) &&
-        (offsetHeight == other.offsetHeight) &&
-        (isMaximized == other.isMaximized) &&
-        (isFullscreen == other.isFullscreen));
-  }
-
-  Map<String, dynamic> toJson() {
-    return <String, dynamic>{
-      "width": width,
-      "height": height,
-      "offsetWidth": offsetWidth,
-      "offsetHeight": offsetHeight,
-      "isMaximized": isMaximized,
-      "isFullscreen": isFullscreen,
-    };
-  }
-
-  @override
-  String toString() {
-    return jsonEncode(toJson());
-  }
-
-  static LastWindowPosition? loadFromString(String content) {
-    if (content.isEmpty) {
-      return null;
-    }
-    try {
-      final m = jsonDecode(content);
-      return LastWindowPosition(m["width"], m["height"], m["offsetWidth"],
-          m["offsetHeight"], m["isMaximized"], m["isFullscreen"]);
-    } catch (e) {
-      debugPrintStack(
-          label:
-              'Failed to load LastWindowPosition "$content" ${e.toString()}');
-      return null;
-    }
-  }
-}
-
-String get windowFramePrefix =>
-    kWindowPrefix +
-    (bind.isIncomingOnly()
-        ? "incoming_"
-        : (bind.isOutgoingOnly() ? "outgoing_" : ""));
-
-typedef WindowKey = ({WindowType type, int? windowId});
-
-LastWindowPosition? _lastWindowPosition = null;
-final Debouncer _saveWindowDebounce = Debouncer(delay: Duration(seconds: 1));
-
-/// Save window position and size on exit
-/// Note that windowId must be provided if it's subwindow
-Future<void> saveWindowPosition(WindowType type,
-    {int? windowId, bool? flush}) async {
-  if (type != WindowType.Main && windowId == null) {
-    debugPrint(
-        "Error: windowId cannot be null when saving positions for sub window");
-  }
-
-  Offset? position;
-  Size? sz;
-  late bool isMaximized;
-  bool isFullscreen = stateGlobal.fullscreen.isTrue;
-
-  setPreFrame() {
-    final pos = bind.getLocalFlutterOption(k: windowFramePrefix + type.name);
-    var lpos = LastWindowPosition.loadFromString(pos);
-    if (lpos != null) {
-      if (lpos.offsetWidth != null && lpos.offsetHeight != null) {
-        position = Offset(lpos.offsetWidth!, lpos.offsetHeight!);
-      }
-      if (lpos.width != null && lpos.height != null) {
-        sz = Size(lpos.width!, lpos.height!);
-      }
-    }
-  }
-
-  switch (type) {
-    case WindowType.Main:
-      // Checking `bind.isIncomingOnly()` is a simple workaround for MacOS.
-      // `await windowManager.isMaximized()` will always return true
-      // if is not resizable. The reason is unknown.
-      //
-      // `setResizable(!bind.isIncomingOnly());` in main.dart
-      isMaximized =
-          bind.isIncomingOnly() ? false : await windowManager.isMaximized();
-      if (isFullscreen || isMaximized) {
-        setPreFrame();
-      } else {
-        position = await windowManager.getPosition(
-            ignoreDevicePixelRatio: _ignoreDevicePixelRatio);
-        sz = await windowManager.getSize(
-            ignoreDevicePixelRatio: _ignoreDevicePixelRatio);
-      }
-      break;
-    default:
-      final wc = WindowController.fromWindowId(windowId!);
-      isMaximized = await wc.isMaximized();
-      if (isFullscreen || isMaximized) {
-        setPreFrame();
-      } else {
-        final Rect frame;
-        try {
-          frame = await wc.getFrame();
-        } catch (e) {
-          debugPrint(
-              "Failed to get frame of window $windowId, it may be hidden");
-          return;
+            }
         }
-        position = frame.topLeft;
-        sz = frame.size;
-      }
-      break;
-  }
-  if (isWindows && position != null) {
-    const kMinOffset = -10000;
-    const kMaxOffset = 10000;
-    if (position!.dx < kMinOffset ||
-        position!.dy < kMinOffset ||
-        position!.dx > kMaxOffset ||
-        position!.dy > kMaxOffset) {
-      debugPrint("Invalid position: $position, ignore saving position");
-      return;
-    }
-  }
-
-  final pos = LastWindowPosition(sz?.width, sz?.height, position?.dx,
-      position?.dy, isMaximized, isFullscreen);
-
-  final WindowKey key = (type: type, windowId: windowId);
-
-  final bool haveNewWindowPosition =
-      (_lastWindowPosition == null) || !pos.equals(_lastWindowPosition!);
-  final bool isPreviousNewWindowPositionPending = _saveWindowDebounce.isRunning;
-
-  if (haveNewWindowPosition || isPreviousNewWindowPositionPending) {
-    _lastWindowPosition = pos;
-
-    if (flush ?? false) {
-      // If a previous update is pending, replace it.
-      _saveWindowDebounce.cancel();
-      await _saveWindowPositionActual(key);
-    } else if (haveNewWindowPosition) {
-      _saveWindowDebounce.call(() => _saveWindowPositionActual(key));
-    }
-  }
-}
-
-Future<void> _saveWindowPositionActual(WindowKey key) async {
-  LastWindowPosition? pos = _lastWindowPosition;
-
-  if (pos != null) {
-    debugPrint(
-        "Saving frame: ${key.windowId}: ${pos.width}/${pos.height}, offset:${pos.offsetWidth}/${pos.offsetHeight}, isMaximized:${pos.isMaximized}, isFullscreen:${pos.isFullscreen}");
-
-    await bind.setLocalFlutterOption(
-        k: windowFramePrefix + key.type.name, v: pos.toString());
-
-    if ((key.type == WindowType.RemoteDesktop ||
-            key.type == WindowType.ViewCamera) &&
-        key.windowId != null) {
-      await _saveSessionWindowPosition(key.type, key.windowId!,
-          pos.isMaximized ?? false, pos.isFullscreen ?? false, pos);
-    }
-  }
-}
-
-Future _saveSessionWindowPosition(WindowType windowType, int windowId,
-    bool isMaximized, bool isFullscreen, LastWindowPosition pos) async {
-  final remoteList = await DesktopMultiWindow.invokeMethod(
-      windowId, kWindowEventGetRemoteList, null);
-  getPeerPos(String peerId) {
-    if (isMaximized || isFullscreen) {
-      final peerPos = bind.mainGetPeerFlutterOptionSync(
-          id: peerId, k: windowFramePrefix + windowType.name);
-      var lpos = LastWindowPosition.loadFromString(peerPos);
-      return LastWindowPosition(
-              lpos?.width ?? pos.offsetWidth,
-              lpos?.height ?? pos.offsetHeight,
-              lpos?.offsetWidth ?? pos.offsetWidth,
-              lpos?.offsetHeight ?? pos.offsetHeight,
-              isMaximized,
-              isFullscreen)
-          .toString();
-    } else {
-      return pos.toString();
-    }
-  }
-
-  if (remoteList != null) {
-    for (final peerId in remoteList.split(',')) {
-      bind.mainSetPeerFlutterOptionSync(
-          id: peerId,
-          k: windowFramePrefix + windowType.name,
-          v: getPeerPos(peerId));
-    }
-  }
-}
-
-Future<Size> _adjustRestoreMainWindowSize(double? width, double? height) async {
-  const double minWidth = 1;
-  const double minHeight = 1;
-  const double maxWidth = 6480;
-  const double maxHeight = 6480;
-
-  final defaultWidth =
-      ((isDesktop || isWebDesktop) ? 1280 : kMobileDefaultDisplayWidth)
-          .toDouble();
-  final defaultHeight =
-      ((isDesktop || isWebDesktop) ? 720 : kMobileDefaultDisplayHeight)
-          .toDouble();
-  double restoreWidth = width ?? defaultWidth;
-  double restoreHeight = height ?? defaultHeight;
-
-  if (restoreWidth < minWidth) {
-    restoreWidth = defaultWidth;
-  }
-  if (restoreHeight < minHeight) {
-    restoreHeight = defaultHeight;
-  }
-  if (restoreWidth > maxWidth) {
-    restoreWidth = defaultWidth;
-  }
-  if (restoreHeight > maxHeight) {
-    restoreHeight = defaultHeight;
-  }
-  return Size(restoreWidth, restoreHeight);
-}
-
-// Consider using Rect.contains() instead,
-// though the implementation is not exactly the same.
-bool isPointInRect(Offset point, Rect rect) {
-  return point.dx >= rect.left &&
-      point.dx <= rect.right &&
-      point.dy >= rect.top &&
-      point.dy <= rect.bottom;
-}
-
-/// return null means center
-Future<Offset?> _adjustRestoreMainWindowOffset(
-  double? left,
-  double? top,
-  double? width,
-  double? height,
-) async {
-  if (left == null || top == null || width == null || height == null) {
-    return null;
-  }
-
-  if (isDesktop || isWebDesktop) {
-    final screens = await window_size.getScreenList();
-    if (screens.isNotEmpty) {
-      final windowRect = Rect.fromLTWH(left, top, width, height);
-      bool isVisible = false;
-      for (final screen in screens) {
-        final intersection = windowRect.intersect(screen.visibleFrame);
-        if (intersection.width >= 10.0 && intersection.height >= 10.0) {
-          isVisible = true;
-          break;
+        Err(e) => {
+            log::warn!("Failed to bind IPv6 socket: {}", e);
         }
-      }
-      if (!isVisible) {
-        return null;
-      }
-      return Offset(left, top);
     }
-  }
-
-  double frameLeft = 0.0;
-  double frameTop = 0.0;
-  double frameRight = ((isDesktop || isWebDesktop)
-          ? kDesktopMaxDisplaySize
-          : kMobileMaxDisplaySize)
-      .toDouble();
-  double frameBottom = ((isDesktop || isWebDesktop)
-          ? kDesktopMaxDisplaySize
-          : kMobileMaxDisplaySize)
-      .toDouble();
-
-  final minWidth = 10.0;
-  if ((left + minWidth) > frameRight ||
-      (top + minWidth) > frameBottom ||
-      (left + width - minWidth) < frameLeft ||
-      top < frameTop) {
-    return null;
-  } else {
-    return Offset(left, top);
-  }
-}
-
-/// Restore window position and size on start
-/// Note that windowId must be provided if it's subwindow
-//
-// display is used to set the offset of the window in individual display mode.
-Future<bool> restoreWindowPosition(WindowType type,
-    {int? windowId, String? peerId, int? display}) async {
-  if (bind
-      .mainGetEnv(key: "DISABLE_RUSTDESK_RESTORE_WINDOW_POSITION")
-      .isNotEmpty) {
-    return false;
-  }
-  if (type != WindowType.Main && windowId == null) {
-    debugPrint(
-        "Error: windowId cannot be null when saving positions for sub window");
-    return false;
-  }
-
-  bool isRemotePeerPos = false;
-  String? pos;
-  // No need to check mainGetLocalBoolOptionSync(kOptionOpenNewConnInTabs)
-  // Though "open in tabs" is true and the new window restore peer position, it's ok.
-  if ((type == WindowType.RemoteDesktop || type == WindowType.ViewCamera) &&
-      windowId != null &&
-      peerId != null) {
-    final peerPos = bind.mainGetPeerFlutterOptionSync(
-        id: peerId, k: windowFramePrefix + type.name);
-    if (peerPos.isNotEmpty) {
-      pos = peerPos;
-    }
-    isRemotePeerPos = pos != null;
-  }
-  pos ??= bind.getLocalFlutterOption(k: windowFramePrefix + type.name);
-
-  var lpos = LastWindowPosition.loadFromString(pos);
-  if (lpos == null) {
-    debugPrint("No window position saved, trying to center the window.");
-    switch (type) {
-      case WindowType.Main:
-        // Center the main window only if no position is saved (on first run).
-        if (isWindows || isLinux) {
-          await windowManager.center();
-        }
-        // For MacOS, the window is already centered by default.
-        // See https://github.com/rustdesk/rustdesk/blob/9b9276e7524523d7f667fefcd0694d981443df0e/flutter/macos/Runner/Base.lproj/MainMenu.xib#L333
-        // If `<windowPositionMask>` in `<window>` is not set, the window will be centered.
-        break;
-      default:
-        // No need to change the position of a sub window if no position is saved,
-        // since the default position is already centered.
-        // https://github.com/rustdesk/rustdesk/blob/317639169359936f7f9f85ef445ec9774218772d/flutter/lib/utils/multi_window_manager.dart#L163
-        break;
-    }
-    return true;
-  }
-  if (type == WindowType.RemoteDesktop || type == WindowType.ViewCamera) {
-    if (!isRemotePeerPos && windowId != null) {
-      if (lpos.offsetWidth != null) {
-        lpos.offsetWidth = lpos.offsetWidth! + windowId * kNewWindowOffset;
-      }
-      if (lpos.offsetHeight != null) {
-        lpos.offsetHeight = lpos.offsetHeight! + windowId * kNewWindowOffset;
-      }
-    }
-    if (display != null) {
-      if (lpos.offsetWidth != null) {
-        lpos.offsetWidth = lpos.offsetWidth! + display * kNewWindowOffset;
-      }
-      if (lpos.offsetHeight != null) {
-        lpos.offsetHeight = lpos.offsetHeight! + display * kNewWindowOffset;
-      }
-    }
-  }
-
-  final size = await _adjustRestoreMainWindowSize(lpos.width, lpos.height);
-  final offsetLeftTop = await _adjustRestoreMainWindowOffset(
-    lpos.offsetWidth,
-    lpos.offsetHeight,
-    size.width,
-    size.height,
-  );
-  debugPrint(
-      "restore lpos: ${size.width}/${size.height}, offset:${offsetLeftTop?.dx}/${offsetLeftTop?.dy}, isMaximized: ${lpos.isMaximized}, isFullscreen: ${lpos.isFullscreen}");
-
-  switch (type) {
-    case WindowType.Main:
-      restorePos() async {
-        if (offsetLeftTop == null) {
-          await windowManager.center();
-        } else {
-          await windowManager.setPosition(offsetLeftTop,
-              ignoreDevicePixelRatio: _ignoreDevicePixelRatio);
-        }
-      }
-      if (lpos.isMaximized == true) {
-        await restorePos();
-        if (!(bind.isIncomingOnly() || bind.isOutgoingOnly())) {
-          await windowManager.maximize();
-        }
-      } else {
-        final storeSize = !bind.isIncomingOnly() || bind.isOutgoingOnly();
-        if (isWindows) {
-          if (storeSize) {
-            // We need to set the window size first to avoid the incorrect size in some special cases.
-            // E.g. There are two monitors, the left one is 100% DPI and the right one is 175% DPI.
-            // The window belongs to the left monitor, but if it is moved a little to the right, it will belong to the right monitor.
-            // After restoring, the size will be incorrect.
-            // See known issue in https://github.com/rustdesk/rustdesk/pull/9840
-            await windowManager.setSize(size,
-                ignoreDevicePixelRatio: _ignoreDevicePixelRatio);
-          }
-          await restorePos();
-          if (storeSize) {
-            await windowManager.setSize(size,
-                ignoreDevicePixelRatio: _ignoreDevicePixelRatio);
-          }
-        } else {
-          if (storeSize) {
-            await windowManager.setSize(size,
-                ignoreDevicePixelRatio: _ignoreDevicePixelRatio);
-          }
-          await restorePos();
-        }
-      }
-      return true;
-    default:
-      final wc = WindowController.fromWindowId(windowId!);
-      restoreFrame() async {
-        if (offsetLeftTop == null) {
-          await wc.center();
-        } else {
-          final frame = Rect.fromLTWH(
-              offsetLeftTop.dx, offsetLeftTop.dy, size.width, size.height);
-          await wc.setFrame(frame);
-        }
-      }
-      if (lpos.isFullscreen == true) {
-        if (!isMacOS) {
-          await restoreFrame();
-        }
-        // An duration is needed to avoid the window being restored after fullscreen.
-        Future.delayed(Duration(milliseconds: 300), () async {
-          if (kWindowId == windowId) {
-            stateGlobal.setFullscreen(true);
-          } else {
-            // If is not current window, we need to send a fullscreen message to `windowId`
-            DesktopMultiWindow.invokeMethod(
-                windowId, kWindowEventSetFullscreen, 'true');
-          }
-        });
-      } else if (lpos.isMaximized == true) {
-        await restoreFrame();
-        // An duration is needed to avoid the window being restored after maximized.
-        Future.delayed(Duration(milliseconds: 300), () async {
-          await wc.maximize();
-        });
-      } else {
-        await restoreFrame();
-      }
-      break;
-  }
-  return false;
-}
-
-var webInitialLink = "";
-
-/// Initialize uni links for macos/windows
-///
-/// [Availability]
-/// initUniLinks should only be used on macos/windows.
-/// we use dbus for linux currently.
-Future<bool> initUniLinks() async {
-  if (isLinux) {
-    return false;
-  }
-  // check cold boot
-  try {
-    final initialLink = await getInitialLink();
-    print("initialLink: $initialLink");
-    if (initialLink == null || initialLink.isEmpty) {
-      return false;
-    }
-    if (isWeb) {
-      webInitialLink = initialLink;
-      return false;
-    } else {
-      return handleUriLink(uriString: initialLink);
-    }
-  } catch (err) {
-    debugPrintStack(label: "$err");
-    return false;
-  }
-}
-
-/// Listen for uni links.
-///
-/// * handleByFlutter: Should uni links be handled by Flutter.
-///
-/// Returns a [StreamSubscription] which can listen the uni links.
-StreamSubscription? listenUniLinks({handleByFlutter = true}) {
-  if (isLinux || isWeb) {
-    return null;
-  }
-
-  final sub = uriLinkStream.listen((Uri? uri) {
-    debugPrint("A uri was received: $uri. handleByFlutter $handleByFlutter");
-    if (uri != null) {
-      if (handleByFlutter) {
-        handleUriLink(uri: uri);
-      } else {
-        bind.sendUrlScheme(url: uri.toString());
-      }
-    } else {
-      print("uni listen error: uri is empty.");
-    }
-  }, onError: (err) {
-    print("uni links error: $err");
-  });
-  return sub;
-}
-
-enum UriLinkType {
-  remoteDesktop,
-  fileTransfer,
-  viewCamera,
-  portForward,
-  rdp,
-  terminal,
-}
-
-setEnvTerminalAdmin() {
-  bind.mainSetEnv(key: 'IS_TERMINAL_ADMIN', value: 'Y');
-}
-
-// uri link handler
-bool handleUriLink({List<String>? cmdArgs, Uri? uri, String? uriString}) {
-  List<String>? args;
-  if (cmdArgs != null && cmdArgs.isNotEmpty) {
-    args = cmdArgs;
-    // rustdesk <uri link>
-    if (args[0].startsWith(bind.mainUriPrefixSync())) {
-      final uri = Uri.tryParse(args[0]);
-      if (uri != null) {
-        args = urlLinkToCmdArgs(uri);
-      }
-    }
-  } else if (uri != null) {
-    args = urlLinkToCmdArgs(uri);
-  } else if (uriString != null) {
-    final uri = Uri.tryParse(uriString);
-    if (uri != null) {
-      args = urlLinkToCmdArgs(uri);
-    }
-  }
-  if (args == null) {
-    return false;
-  }
-
-  if (args.isEmpty) {
-    windowOnTop(null);
-    return true;
-  }
-
-  UriLinkType? type;
-  String? id;
-  String? password;
-  String? switchUuid;
-  bool? forceRelay;
-  for (int i = 0; i < args.length; i++) {
-    switch (args[i]) {
-      case '--connect':
-      case '--play':
-        type = UriLinkType.remoteDesktop;
-        id = args[i + 1];
-        i++;
-        break;
-      case '--file-transfer':
-        type = UriLinkType.fileTransfer;
-        id = args[i + 1];
-        i++;
-        break;
-      case '--view-camera':
-        type = UriLinkType.viewCamera;
-        id = args[i + 1];
-        i++;
-        break;
-      case '--port-forward':
-        type = UriLinkType.portForward;
-        id = args[i + 1];
-        i++;
-        break;
-      case '--rdp':
-        type = UriLinkType.rdp;
-        id = args[i + 1];
-        i++;
-        break;
-      case '--terminal':
-        type = UriLinkType.terminal;
-        id = args[i + 1];
-        i++;
-        break;
-      case '--terminal-admin':
-        setEnvTerminalAdmin();
-        type = UriLinkType.terminal;
-        id = args[i + 1];
-        i++;
-        break;
-      case '--password':
-        password = args[i + 1];
-        i++;
-        break;
-      case '--switch_uuid':
-        switchUuid = args[i + 1];
-        i++;
-        break;
-      case '--relay':
-        forceRelay = true;
-        break;
-      default:
-        break;
-    }
-  }
-  if (type != null && id != null) {
-    switch (type) {
-      case UriLinkType.remoteDesktop:
-        Future.delayed(Duration.zero, () {
-          rustDeskWinManager.newRemoteDesktop(id!,
-              password: password,
-              switchUuid: switchUuid,
-              forceRelay: forceRelay);
-        });
-        break;
-      case UriLinkType.fileTransfer:
-        Future.delayed(Duration.zero, () {
-          rustDeskWinManager.newFileTransfer(id!,
-              password: password, forceRelay: forceRelay);
-        });
-        break;
-      case UriLinkType.viewCamera:
-        Future.delayed(Duration.zero, () {
-          rustDeskWinManager.newViewCamera(id!,
-              password: password, forceRelay: forceRelay);
-        });
-        break;
-      case UriLinkType.portForward:
-        Future.delayed(Duration.zero, () {
-          rustDeskWinManager.newPortForward(id!, false,
-              password: password, forceRelay: forceRelay);
-        });
-        break;
-      case UriLinkType.rdp:
-        Future.delayed(Duration.zero, () {
-          rustDeskWinManager.newPortForward(id!, true,
-              password: password, forceRelay: forceRelay);
-        });
-        break;
-      case UriLinkType.terminal:
-        Future.delayed(Duration.zero, () {
-          rustDeskWinManager.newTerminal(id!,
-              password: password, forceRelay: forceRelay);
-        });
-        break;
-    }
-
-    return true;
-  }
-
-  return false;
-}
-
-List<String>? urlLinkToCmdArgs(Uri uri) {
-  String? command;
-  String? id;
-  final options = [
-    "connect",
-    "play",
-    "file-transfer",
-    "view-camera",
-    "port-forward",
-    "rdp",
-    "terminal",
-    "terminal-admin",
-  ];
-  if (uri.authority.isEmpty &&
-      uri.path.split('').every((char) => char == '/')) {
-    return [];
-  } else if (uri.authority == "connection" && uri.path.startsWith("/new/")) {
-    // For compatibility
-    command = '--connect';
-    id = uri.path.substring("/new/".length);
-  } else if (uri.authority == "config") {
-    if (isAndroid || isIOS) {
-      final config = uri.path.substring("/".length);
-      // add a timer to make showToast work
-      Timer(Duration(seconds: 1), () {
-        importConfig(null, null, config);
-      });
-    }
-    return null;
-  } else if (uri.authority == "password") {
-    if (isAndroid || isIOS) {
-      final password = uri.path.substring("/".length);
-      if (password.isNotEmpty) {
-        Timer(Duration(seconds: 1), () async {
-          await bind.mainSetPermanentPassword(password: password);
-          showToast(translate('Successful'));
-        });
-      }
-    }
-  } else if (options.contains(uri.authority)) {
-    command = '--${uri.authority}';
-    if (uri.path.length > 1) {
-      id = uri.path.substring(1);
-    }
-  } else if (uri.authority.length > 2 &&
-      (uri.path.length <= 1 ||
-          (uri.path == '/r' || uri.path.startsWith('/r@')))) {
-    // rustdesk://<connect-id>
-    // rustdesk://<connect-id>/r
-    // rustdesk://<connect-id>/r@<server>
-    command = '--connect';
-    id = uri.authority;
-    if (uri.path.length > 1) {
-      id = id + uri.path;
-    }
-  }
-
-  var queryParameters =
-      uri.queryParameters.map((k, v) => MapEntry(k.toLowerCase(), v));
-
-  var key = queryParameters["key"];
-  if (id != null) {
-    if (key != null) {
-      id = "$id?key=$key";
-    }
-  }
-
-  if (isMobile && id != null) {
-    final forceRelay = queryParameters["relay"] != null;
-    final password = queryParameters["password"];
-
-    // Determine connection type based on command
-    if (command == '--file-transfer') {
-      connect(Get.context!, id,
-          isFileTransfer: true, forceRelay: forceRelay, password: password);
-    } else if (command == '--view-camera') {
-      connect(Get.context!, id,
-          isViewCamera: true, forceRelay: forceRelay, password: password);
-    } else if (command == '--terminal') {
-      connect(Get.context!, id,
-          isTerminal: true, forceRelay: forceRelay, password: password);
-    } else if (command == 'terminal-admin') {
-      setEnvTerminalAdmin();
-      connect(Get.context!, id,
-          isTerminal: true, forceRelay: forceRelay, password: password);
-    } else {
-      // Default to remote desktop for '--connect', '--play', or direct connection
-      connect(Get.context!, id, forceRelay: forceRelay, password: password);
-    }
-    return null;
-  }
-
-  List<String> args = List.empty(growable: true);
-  if (command != null && id != null) {
-    args.add(command);
-    args.add(id);
-    var param = queryParameters;
-    String? password = param["password"];
-    if (password != null) args.addAll(['--password', password]);
-    String? switch_uuid = param["switch_uuid"];
-    if (switch_uuid != null) args.addAll(['--switch_uuid', switch_uuid]);
-    if (param["relay"] != null) args.add("--relay");
-    return args;
-  }
-
-  return null;
-}
-
-connectMainDesktop(String id,
-    {required bool isFileTransfer,
-    required bool isViewCamera,
-    required bool isTerminal,
-    required bool isTcpTunneling,
-    required bool isRDP,
-    bool? forceRelay,
-    String? password,
-    String? connToken,
-    bool? isSharedPassword}) async {
-  if (isFileTransfer) {
-    await rustDeskWinManager.newFileTransfer(id,
-        password: password,
-        isSharedPassword: isSharedPassword,
-        connToken: connToken,
-        forceRelay: forceRelay);
-  } else if (isViewCamera) {
-    await rustDeskWinManager.newViewCamera(id,
-        password: password,
-        isSharedPassword: isSharedPassword,
-        connToken: connToken,
-        forceRelay: forceRelay);
-  } else if (isTcpTunneling || isRDP) {
-    await rustDeskWinManager.newPortForward(id, isRDP,
-        password: password,
-        isSharedPassword: isSharedPassword,
-        connToken: connToken,
-        forceRelay: forceRelay);
-  } else if (isTerminal) {
-    await rustDeskWinManager.newTerminal(id,
-        password: password,
-        isSharedPassword: isSharedPassword,
-        connToken: connToken,
-        forceRelay: forceRelay);
-  } else {
-    await rustDeskWinManager.newRemoteDesktop(id,
-        password: password,
-        isSharedPassword: isSharedPassword,
-        forceRelay: forceRelay);
-  }
-}
-
-/// Connect to a peer with [id].
-/// If [isFileTransfer], starts a session only for file transfer.
-/// If [isViewCamera], starts a session only for view camera.
-/// If [isTcpTunneling], starts a session only for tcp tunneling.
-/// If [isRDP], starts a session only for rdp.
-connect(BuildContext context, String id,
-    {bool isFileTransfer = false,
-    bool isViewCamera = false,
-    bool isTerminal = false,
-    bool isTcpTunneling = false,
-    bool isRDP = false,
-    bool forceRelay = false,
-    String? password,
-    String? connToken,
-    bool? isSharedPassword}) async {
-  if (id == '') return;
-  if (!isDesktop || desktopType == DesktopType.main) {
-    try {
-      if (Get.isRegistered<IDTextEditingController>()) {
-        final idController = Get.find<IDTextEditingController>();
-        idController.text = formatID(id);
-      }
-      if (Get.isRegistered<TextEditingController>()) {
-        final fieldTextEditingController = Get.find<TextEditingController>();
-        fieldTextEditingController.text = formatID(id);
-      }
-    } catch (_) {}
-  }
-  id = id.replaceAll(' ', '');
-  final oldId = id;
-  id = await bind.mainHandleRelayId(id: id);
-  forceRelay = id != oldId || forceRelay;
-  assert(!(isFileTransfer && isTcpTunneling && isRDP),
-      "more than one connect type");
-
-  if (isDesktop) {
-    if (desktopType == DesktopType.main) {
-      await connectMainDesktop(
-        id,
-        isFileTransfer: isFileTransfer,
-        isViewCamera: isViewCamera,
-        isTerminal: isTerminal,
-        isTcpTunneling: isTcpTunneling,
-        isRDP: isRDP,
-        password: password,
-        isSharedPassword: isSharedPassword,
-        forceRelay: forceRelay,
-      );
-    } else {
-      await rustDeskWinManager.call(WindowType.Main, kWindowConnect, {
-        'id': id,
-        'isFileTransfer': isFileTransfer,
-        'isViewCamera': isViewCamera,
-        'isTerminal': isTerminal,
-        'isTcpTunneling': isTcpTunneling,
-        'isRDP': isRDP,
-        'password': password,
-        'isSharedPassword': isSharedPassword,
-        'forceRelay': forceRelay,
-        'connToken': connToken,
-      });
-    }
-  } else {
-    if (isFileTransfer) {
-      if (isAndroid) {
-        if (!await AndroidPermissionManager.check(kManageExternalStorage)) {
-          if (!await AndroidPermissionManager.request(kManageExternalStorage)) {
-            return;
-          }
-        }
-      }
-      if (isWeb) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (BuildContext context) =>
-                desktop_file_manager.FileManagerPage(
-                    id: id,
-                    password: password,
-                    isSharedPassword: isSharedPassword),
-          ),
-        );
-      } else {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (BuildContext context) => FileManagerPage(
-                id: id,
-                password: password,
-                isSharedPassword: isSharedPassword,
-                forceRelay: forceRelay),
-          ),
-        );
-      }
-    } else if (isViewCamera) {
-      if (isWeb) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (BuildContext context) =>
-                desktop_view_camera.ViewCameraPage(
-              key: ValueKey(id),
-              id: id,
-              toolbarState: ToolbarState(),
-              password: password,
-              isSharedPassword: isSharedPassword,
-            ),
-          ),
-        );
-      } else {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (BuildContext context) => ViewCameraPage(
-                id: id,
-                password: password,
-                isSharedPassword: isSharedPassword,
-                forceRelay: forceRelay),
-          ),
-        );
-      }
-    } else if (isTerminal) {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (BuildContext context) => TerminalPage(
-            id: id,
-            password: password,
-            isSharedPassword: isSharedPassword,
-            forceRelay: forceRelay,
-          ),
-        ),
-      );
-    } else {
-      if (isWeb) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (BuildContext context) => desktop_remote.RemotePage(
-              key: ValueKey(id),
-              id: id,
-              toolbarState: ToolbarState(),
-              password: password,
-              isSharedPassword: isSharedPassword,
-            ),
-          ),
-        );
-      } else {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (BuildContext context) => RemotePage(
-                id: id,
-                password: password,
-                isSharedPassword: isSharedPassword,
-                forceRelay: forceRelay),
-          ),
-        );
-      }
-    }
-    stateGlobal.isInMainPage = false;
-  }
-
-  FocusScopeNode currentFocus = FocusScope.of(context);
-  if (!currentFocus.hasPrimaryFocus) {
-    currentFocus.unfocus();
-  }
-}
-
-Map<String, String> getHttpHeaders() {
-  return {
-    'Authorization': 'Bearer ${bind.mainGetLocalOption(key: 'access_token')}'
-  };
-}
-
-// Simple wrapper of built-in types for reference use.
-class SimpleWrapper<T> {
-  T value;
-  SimpleWrapper(this.value);
-}
-
-/// Wakelock manager with reference counting for desktop.
-/// Ensures wakelock is only disabled when all sessions are closed/minimized.
-///
-/// Note: Each isolate has its own WakelockPlus instance with independent assertion.
-/// As long as one isolate has wakelock enabled, the screen stays awake.
-/// This manager handles multiple tabs within the same isolate.
-class WakelockManager {
-  static final Set<UniqueKey> _enabledKeys = {};
-  // Don't use WakelockPlus.enabled, it causes error on Android:
-  // Unhandled Exception: FormatException: Message corrupted
-  //
-  // On Linux, multiple enable() calls create only one inhibit, but each disable()
-  // only releases if _cookie != null. So we need our own _enabled state to avoid
-  // calling disable() when not enabled.
-  // See: https://github.com/fluttercommunity/wakelock_plus/blob/0c74e5bbc6aefac57b6c96bb7ef987705ed559ec/wakelock_plus/lib/src/wakelock_plus_linux_plugin.dart#L48
-  static bool _enabled = false;
-
-  static void enable(UniqueKey key, {bool isServer = false}) {
-    // Check if we should keep awake during outgoing sessions
-    if (!isServer) {
-      final keepAwake =
-          mainGetLocalBoolOptionSync(kOptionKeepAwakeDuringOutgoingSessions);
-      if (!keepAwake) {
-        return; // Don't enable wakelock if user disabled keep awake
-      }
-    }
-    if (isDesktop) {
-      _enabledKeys.add(key);
-    }
-    if (!_enabled) {
-      _enabled = true;
-      WakelockPlus.enable();
-    }
-  }
-
-  static void disable(UniqueKey key) {
-    if (isDesktop) {
-      _enabledKeys.remove(key);
-      if (_enabledKeys.isNotEmpty) {
-        return;
-      }
-    }
-    if (_enabled) {
-      WakelockPlus.disable();
-      _enabled = false;
-    }
-  }
-}
-
-/// call this to reload current window.
-///
-/// [Note]
-/// Must have [RefreshWrapper] on the top of widget tree.
-void reloadCurrentWindow() {
-  if (Get.context != null) {
-    // reload self window
-    RefreshWrapper.of(Get.context!)?.rebuild();
-  } else {
-    debugPrint(
-        "reload current window failed, global BuildContext does not exist");
-  }
-}
-
-/// call this to reload all windows, including main + all sub windows.
-Future<void> reloadAllWindows() async {
-  reloadCurrentWindow();
-  try {
-    final ids = await DesktopMultiWindow.getAllSubWindowIds();
-    for (final id in ids) {
-      DesktopMultiWindow.invokeMethod(id, kWindowActionRebuild);
-    }
-  } on AssertionError {
-    // ignore
-  }
-}
-
-/// Indicate the flutter app is running in portable mode.
-///
-/// [Note]
-/// Portable build is only available on Windows.
-bool isRunningInPortableMode() {
-  if (!isWindows) {
-    return false;
-  }
-  return bool.hasEnvironment(kEnvPortableExecutable);
-}
-
-/// Window status callback
-Future<void> onActiveWindowChanged() async {
-  print(
-      "[MultiWindowHandler] active window changed: ${rustDeskWinManager.getActiveWindows()}");
-  if (rustDeskWinManager.getActiveWindows().isEmpty) {
-    // close all sub windows
-    try {
-      if (isLinux) {
-        await Future.wait([
-          saveWindowPosition(WindowType.Main),
-          rustDeskWinManager.closeAllSubWindows()
-        ]);
-      } else {
-        await rustDeskWinManager.closeAllSubWindows();
-      }
-    } catch (err) {
-      debugPrintStack(label: "$err");
-    } finally {
-      debugPrint("Start closing RustDesk...");
-      await windowManager.setPreventClose(false);
-      await windowManager.close();
-      if (isMacOS) {
-        // If we call without delay, `flutter/macos/Runner/MainFlutterWindow.swift` can handle the "terminate" event.
-        // But the app will not close.
-        //
-        // No idea why we need to delay here, `terminate()` itself is also an async function.
-        //
-        // A quick workaround, use `Timer.periodic` to avoid the app not closing.
-        // Because `await windowManager.close()` and `RdPlatformChannel.instance.terminate()`
-        // may not work since `Flutter 3.24.4`, see the following logs.
-        // A delay will allow the app to close.
-        //
-        //```
-        // embedder.cc (2725): 'FlutterPlatformMessageCreateResponseHandle' returned 'kInvalidArguments'. Engine handle was invalid.
-        // 2024-11-11 11:41:11.546 RustDesk[90272:2567686] Failed to create a FlutterPlatformMessageResponseHandle (2)
-        // embedder.cc (2672): 'FlutterEngineSendPlatformMessage' returned 'kInvalidArguments'. Invalid engine handle.
-        // 2024-11-11 11:41:11.565 RustDesk[90272:2567686] Failed to send message to Flutter engine on channel 'flutter/lifecycle' (2).
-        // ```
-        periodic_immediate(
-            Duration(milliseconds: 30), RdPlatformChannel.instance.terminate);
-      }
-    }
-  }
-}
-
-Timer periodic_immediate(Duration duration, Future<void> Function() callback) {
-  Future.delayed(Duration.zero, callback);
-  return Timer.periodic(duration, (timer) async {
-    await callback();
-  });
-}
-
-/// return a human readable windows version
-WindowsTarget getWindowsTarget(int buildNumber) {
-  if (!isWindows) {
-    return WindowsTarget.naw;
-  }
-  if (buildNumber >= 22000) {
-    return WindowsTarget.w11;
-  } else if (buildNumber >= 10240) {
-    return WindowsTarget.w10;
-  } else if (buildNumber >= 9600) {
-    return WindowsTarget.w8_1;
-  } else if (buildNumber >= 9200) {
-    return WindowsTarget.w8;
-  } else if (buildNumber >= 7601) {
-    return WindowsTarget.w7;
-  } else if (buildNumber >= 6002) {
-    return WindowsTarget.vista;
-  } else {
-    // minimum support
-    return WindowsTarget.xp;
-  }
-}
-
-/// Get windows target build number.
-///
-/// [Note]
-/// Please use this function wrapped with `Platform.isWindows`.
-int getWindowsTargetBuildNumber() {
-  return getWindowsTargetBuildNumber_();
-}
-
-/// Indicating we need to use compatible ui mode.
-///
-/// [Conditions]
-/// - Windows 7, window will overflow when we use frameless ui.
-bool get kUseCompatibleUiMode =>
-    isWindows &&
-    const [WindowsTarget.w7].contains(windowsBuildNumber.windowsVersion);
-
-bool get isWin10 => windowsBuildNumber.windowsVersion == WindowsTarget.w10;
-
-class ServerConfig {
-  late String idServer;
-  late String relayServer;
-  late String apiServer;
-  late String key;
-
-  ServerConfig(
-      {String? idServer, String? relayServer, String? apiServer, String? key}) {
-    this.idServer = idServer?.trim() ?? '';
-    this.relayServer = relayServer?.trim() ?? '';
-    this.apiServer = apiServer?.trim() ?? '';
-    this.key = key?.trim() ?? '';
-  }
-
-  /// decode from shared string (from user shared or rustdesk-server generated)
-  /// also see [encode]
-  /// throw when decoding failure
-  ServerConfig.decode(String msg) {
-    var json = {};
-    try {
-      // back compatible
-      json = jsonDecode(msg);
-    } catch (err) {
-      final input = msg.split('').reversed.join('');
-      final bytes = base64Decode(base64.normalize(input));
-      json = jsonDecode(utf8.decode(bytes, allowMalformed: true));
-    }
-    idServer = json['host'] ?? '';
-    relayServer = json['relay'] ?? '';
-    apiServer = json['api'] ?? '';
-    key = json['key'] ?? '';
-  }
-
-  /// encode to shared string
-  /// also see [ServerConfig.decode]
-  String encode() {
-    Map<String, String> config = {};
-    config['host'] = idServer.trim();
-    config['relay'] = relayServer.trim();
-    config['api'] = apiServer.trim();
-    config['key'] = key.trim();
-    return base64UrlEncode(Uint8List.fromList(jsonEncode(config).codeUnits))
-        .split('')
-        .reversed
-        .join();
-  }
-
-  /// from local options
-  ServerConfig.fromOptions(Map<String, dynamic> options)
-      : idServer = options['custom-rendezvous-server'] ?? "",
-        relayServer = options['relay-server'] ?? "",
-        apiServer = options['api-server'] ?? "",
-        key = options['key'] ?? "";
-}
-
-Widget dialogButton(String text,
-    {required VoidCallback? onPressed,
-    bool isOutline = false,
-    Widget? icon,
-    TextStyle? style,
-    ButtonStyle? buttonStyle}) {
-  if (isDesktop || isWebDesktop) {
-    if (isOutline) {
-      return icon == null
-          ? OutlinedButton(
-              onPressed: onPressed,
-              child: Text(translate(text), style: style),
-            )
-          : OutlinedButton.icon(
-              icon: icon,
-              onPressed: onPressed,
-              label: Text(translate(text), style: style),
-            );
-    } else {
-      return icon == null
-          ? ElevatedButton(
-              style: ElevatedButton.styleFrom(elevation: 0).merge(buttonStyle),
-              onPressed: onPressed,
-              child: Text(translate(text), style: style),
-            )
-          : ElevatedButton.icon(
-              icon: icon,
-              style: ElevatedButton.styleFrom(elevation: 0).merge(buttonStyle),
-              onPressed: onPressed,
-              label: Text(translate(text), style: style),
-            );
-    }
-  } else {
-    return TextButton(
-      onPressed: onPressed,
-      child: Text(
-        translate(text),
-        style: style,
-      ),
-    );
-  }
-}
-
-int versionCmp(String v1, String v2) {
-  return bind.versionToNumber(v: v1) - bind.versionToNumber(v: v2);
-}
-
-String getWindowName({WindowType? overrideType}) {
-  final name = bind.mainGetAppNameSync();
-  switch (overrideType ?? kWindowType) {
-    case WindowType.Main:
-      return name;
-    case WindowType.FileTransfer:
-      return "File Transfer - $name";
-    case WindowType.ViewCamera:
-      return "View Camera - $name";
-    case WindowType.PortForward:
-      return "Port Forward - $name";
-    case WindowType.RemoteDesktop:
-      return "Remote Desktop - $name";
-    default:
-      break;
-  }
-  return name;
-}
-
-String getWindowNameWithId(String id, {WindowType? overrideType}) {
-  return "${DesktopTab.tablabelGetter(id).value} - ${getWindowName(overrideType: overrideType)}";
-}
-
-Future<void> updateSystemWindowTheme() async {
-  // Set system window theme for macOS.
-  final userPreference = MyTheme.getThemeModePreference();
-  if (userPreference != ThemeMode.system) {
-    if (isMacOS) {
-      await RdPlatformChannel.instance.changeSystemWindowTheme(
-          userPreference == ThemeMode.light
-              ? SystemWindowTheme.light
-              : SystemWindowTheme.dark);
-    }
-  }
-}
-
-/// macOS only
-///
-/// Note: not found a general solution for rust based AVFoundation bingding.
-/// [AVFoundation] crate has compile error.
-const kMacOSPermChannel = MethodChannel("org.rustdesk.rustdesk/host");
-
-enum PermissionAuthorizeType {
-  undetermined,
-  authorized,
-  denied, // and restricted
-}
-
-Future<PermissionAuthorizeType> osxCanRecordAudio() async {
-  int res = await kMacOSPermChannel.invokeMethod("canRecordAudio");
-  print(res);
-  if (res > 0) {
-    return PermissionAuthorizeType.authorized;
-  } else if (res == 0) {
-    return PermissionAuthorizeType.undetermined;
-  } else {
-    return PermissionAuthorizeType.denied;
-  }
-}
-
-Future<bool> osxRequestAudio() async {
-  return await kMacOSPermChannel.invokeMethod("requestRecordAudio");
-}
-
-Widget futureBuilder(
-    {required Future? future, required Widget Function(dynamic data) hasData}) {
-  return FutureBuilder(
-      future: future,
-      builder: (BuildContext context, AsyncSnapshot snapshot) {
-        if (snapshot.hasData) {
-          return hasData(snapshot.data!);
-        } else {
-          if (snapshot.hasError) {
-            debugPrint(snapshot.error.toString());
-          }
-          return Container();
-        }
-      });
-}
-
-void onCopyFingerprint(String value) {
-  if (value.isNotEmpty) {
-    Clipboard.setData(ClipboardData(text: value));
-    showToast('$value\n${translate("Copied")}');
-  } else {
-    showToast(translate("no fingerprints"));
-  }
-}
-
-Future<bool> callMainCheckSuperUserPermission() async {
-  bool checked = await bind.mainCheckSuperUserPermission();
-  if (isMacOS) {
-    await windowManager.show();
-  }
-  return checked;
-}
-
-Future<void> start_service(bool is_start) async {
-  bool checked = !bind.mainIsInstalled() ||
-      !isMacOS ||
-      await callMainCheckSuperUserPermission();
-  if (checked) {
-    mainSetBoolOption(kOptionStopService, !is_start);
-  }
-}
-
-Future<bool> canBeBlocked() async {
-  // First check control permission
-  final controlPermission = await bind.mainGetCommon(
-      key: "is-remote-modify-enabled-by-control-permissions");
-  if (controlPermission == "true") {
-    return false;
-  } else if (controlPermission == "false") {
-    return true;
-  }
-
-  // Check local settings
-  var accessMode = await bind.mainGetOption(key: kOptionAccessMode);
-  var isCustomAccessMode = accessMode != 'full' && accessMode != 'view';
-  var option = option2bool(kOptionAllowRemoteConfigModification,
-      await bind.mainGetOption(key: kOptionAllowRemoteConfigModification));
-  return accessMode == 'view' || (isCustomAccessMode && !option);
-}
-
-// to-do: web not implemented
-Future<void> shouldBeBlocked(RxBool block, WhetherUseRemoteBlock? use) async {
-  if (use != null && !await use()) {
-    block.value = false;
-    return;
-  }
-  var time0 = DateTime.now().millisecondsSinceEpoch;
-  await bind.mainCheckMouseTime();
-  Timer(const Duration(milliseconds: 120), () async {
-    var d = time0 - await bind.mainGetMouseTime();
-    if (d < 120) {
-      block.value = true;
-    } else {
-      block.value = false;
-    }
-  });
-}
-
-typedef WhetherUseRemoteBlock = Future<bool> Function();
-Widget buildRemoteBlock(
-    {required Widget child,
-    required RxBool block,
-    required bool mask,
-    WhetherUseRemoteBlock? use}) {
-  return Obx(() => MouseRegion(
-        onEnter: (_) async {
-          await shouldBeBlocked(block, use);
-        },
-        onExit: (event) => block.value = false,
-        child: Stack(children: [
-          // scope block tab
-          preventMouseKeyBuilder(child: child, block: block.value),
-          // mask block click, cm not block click and still use check_click_time to avoid block local click
-          if (mask)
-            Offstage(
-                offstage: !block.value,
-                child: Container(
-                  color: Colors.black.withOpacity(0.5),
-                )),
-        ]),
-      ));
-}
-
-Widget preventMouseKeyBuilder({required Widget child, required bool block}) {
-  return ExcludeFocus(
-      excluding: block, child: AbsorbPointer(child: child, absorbing: block));
-}
-
-Widget unreadMessageCountBuilder(RxInt? count,
-    {double? size, double? fontSize}) {
-  return Obx(() => Offstage(
-      offstage: !((count?.value ?? 0) > 0),
-      child: Container(
-        width: size ?? 16,
-        height: size ?? 16,
-        decoration: BoxDecoration(
-          color: Colors.red,
-          shape: BoxShape.circle,
-        ),
-        child: Center(
-          child: Text("${count?.value ?? 0}",
-              maxLines: 1,
-              style: TextStyle(color: Colors.white, fontSize: fontSize ?? 10)),
-        ),
-      )));
-}
-
-Widget unreadTopRightBuilder(RxInt? count, {Widget? icon}) {
-  return Stack(
-    children: [
-      icon ?? Icon(Icons.chat),
-      Positioned(
-          top: 0,
-          right: 0,
-          child: unreadMessageCountBuilder(count, size: 12, fontSize: 8))
-    ],
-  );
-}
-
-String toCapitalized(String s) {
-  if (s.isEmpty) {
-    return s;
-  }
-  return s.substring(0, 1).toUpperCase() + s.substring(1);
-}
-
-Widget buildErrorBanner(BuildContext context,
-    {required RxBool loading,
-    required RxString err,
-    required Function? retry,
-    required Function close}) {
-  return Obx(() => Offstage(
-        offstage: !(!loading.value && err.value.isNotEmpty),
-        child: Center(
-            child: Container(
-          color: MyTheme.color(context).errorBannerBg,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              FittedBox(
-                child: Icon(
-                  Icons.info,
-                  color: Color.fromARGB(255, 249, 81, 81),
-                ),
-              ).marginAll(4),
-              Flexible(
-                child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Tooltip(
-                      message: translate(err.value),
-                      child: SelectableText(
-                        translate(err.value),
-                      ),
-                    )).marginSymmetric(vertical: 2),
-              ),
-              if (retry != null)
-                InkWell(
-                    onTap: () {
-                      retry.call();
-                    },
-                    child: Text(
-                      translate("Retry"),
-                      style: TextStyle(color: MyTheme.accent),
-                    )).marginSymmetric(horizontal: 5),
-              FittedBox(
-                child: InkWell(
-                  onTap: () {
-                    close.call();
-                  },
-                  child: Icon(Icons.close).marginSymmetric(horizontal: 5),
-                ),
-              ).marginAll(4)
-            ],
-          ),
-        )).marginOnly(bottom: 14),
-      ));
-}
-
-String getDesktopTabLabel(String peerId, String alias) {
-  String label = alias.isEmpty ? peerId : alias;
-  try {
-    String peer = bind.mainGetPeerSync(id: peerId);
-    Map<String, dynamic> config = jsonDecode(peer);
-    if (config['info']['hostname'] is String) {
-      String hostname = config['info']['hostname'];
-      if (hostname.isNotEmpty &&
-          !label.toLowerCase().contains(hostname.toLowerCase())) {
-        label += "@$hostname";
-      }
-    }
-  } catch (e) {
-    debugPrint("Failed to get hostname:$e");
-  }
-  return label;
-}
-
-sessionRefreshVideo(SessionID sessionId, PeerInfo pi) async {
-  if (pi.currentDisplay == kAllDisplayValue) {
-    for (int i = 0; i < pi.displays.length; i++) {
-      await bind.sessionRefresh(sessionId: sessionId, display: i);
-    }
-  } else {
-    await bind.sessionRefresh(sessionId: sessionId, display: pi.currentDisplay);
-  }
-}
-
-Future<List<Rect>> getScreenListWayland() async {
-  final screenRectList = <Rect>[];
-  if (isMainDesktopWindow) {
-    for (var screen in await window_size.getScreenList()) {
-      final scale = kIgnoreDpi ? 1.0 : screen.scaleFactor;
-      double l = screen.frame.left;
-      double t = screen.frame.top;
-      double r = screen.frame.right;
-      double b = screen.frame.bottom;
-      final rect = Rect.fromLTRB(l / scale, t / scale, r / scale, b / scale);
-      screenRectList.add(rect);
-    }
-  } else {
-    final screenList = await rustDeskWinManager.call(
-        WindowType.Main, kWindowGetScreenList, '');
-    try {
-      for (var screen in jsonDecode(screenList.result) as List<dynamic>) {
-        final scale = kIgnoreDpi ? 1.0 : screen['scaleFactor'];
-        double l = screen['frame']['l'];
-        double t = screen['frame']['t'];
-        double r = screen['frame']['r'];
-        double b = screen['frame']['b'];
-        final rect = Rect.fromLTRB(l / scale, t / scale, r / scale, b / scale);
-        screenRectList.add(rect);
-      }
-    } catch (e) {
-      debugPrint('Failed to parse screenList: $e');
-    }
-  }
-  return screenRectList;
-}
-
-Future<List<Rect>> getScreenListNotWayland() async {
-  final screenRectList = <Rect>[];
-  final displays = bind.mainGetDisplays();
-  if (displays.isEmpty) {
-    return screenRectList;
-  }
-  try {
-    for (var display in jsonDecode(displays) as List<dynamic>) {
-      // to-do: scale factor ?
-      // final scale = kIgnoreDpi ? 1.0 : screen.scaleFactor;
-      double l = display['x'].toDouble();
-      double t = display['y'].toDouble();
-      double r = (display['x'] + display['w']).toDouble();
-      double b = (display['y'] + display['h']).toDouble();
-      screenRectList.add(Rect.fromLTRB(l, t, r, b));
-    }
-  } catch (e) {
-    debugPrint('Failed to parse displays: $e');
-  }
-  return screenRectList;
-}
-
-Future<List<Rect>> getScreenRectList() async {
-  return bind.mainCurrentIsWayland()
-      ? await getScreenListWayland()
-      : await getScreenListNotWayland();
-}
-
-openMonitorInTheSameTab(int i, FFI ffi, PeerInfo pi,
-    {bool updateCursorPos = true}) {
-  final displays = i == kAllDisplayValue
-      ? List.generate(pi.displays.length, (index) => index)
-      : [i];
-  // Try clear image model before switching from all displays
-  // 1. The remote side has multiple displays.
-  // 2. Do not use texture render.
-  // 3. Connect to Display 1.
-  // 4. Switch to multi-displays `kAllDisplayValue`
-  // 5. Switch to Display 2.
-  // Then the remote page will display last picture of Display 1 at the beginning.
-  if (pi.forceTextureRender && i != kAllDisplayValue) {
-    ffi.imageModel.clearImage();
-  }
-  bind.sessionSwitchDisplay(
-    isDesktop: isDesktop,
-    sessionId: ffi.sessionId,
-    value: Int32List.fromList(displays),
-  );
-  ffi.ffiModel.switchToNewDisplay(i, ffi.sessionId, ffi.id,
-      updateCursorPos: updateCursorPos);
-}
-
-// Open new tab or window to show this monitor.
-// For now just open new window.
-//
-// screenRect is used to move the new window to the specified screen and set fullscreen.
-openMonitorInNewTabOrWindow(int i, String peerId, PeerInfo pi,
-    {Rect? screenRect}) {
-  final args = {
-    'window_id': stateGlobal.windowId,
-    'peer_id': peerId,
-    'display': i,
-    'display_count': pi.displays.length,
-    'window_type': (kWindowType ?? WindowType.RemoteDesktop).index,
-  };
-  if (screenRect != null) {
-    args['screen_rect'] = {
-      'l': screenRect.left,
-      't': screenRect.top,
-      'r': screenRect.right,
-      'b': screenRect.bottom,
-    };
-  }
-  DesktopMultiWindow.invokeMethod(
-      kMainWindowId, kWindowEventOpenMonitorSession, jsonEncode(args));
-}
-
-setNewConnectWindowFrame(int windowId, String peerId, int preSessionCount,
-    WindowType windowType, int? display, Rect? screenRect) async {
-  if (screenRect == null) {
-    // Do not restore window position to new connection if there's a pre-session.
-    // https://github.com/rustdesk/rustdesk/discussions/8825
-    if (preSessionCount == 0) {
-      await restoreWindowPosition(windowType,
-          windowId: windowId, display: display, peerId: peerId);
-    }
-  } else {
-    await tryMoveToScreenAndSetFullscreen(screenRect);
-  }
-}
-
-tryMoveToScreenAndSetFullscreen(Rect? screenRect) async {
-  if (screenRect == null) {
-    return;
-  }
-  final wc = WindowController.fromWindowId(stateGlobal.windowId);
-  final curFrame = await wc.getFrame();
-  final frame =
-      Rect.fromLTWH(screenRect.left + 30, screenRect.top + 30, 600, 400);
-  if (stateGlobal.fullscreen.isTrue &&
-      curFrame.left <= frame.left &&
-      curFrame.top <= frame.top &&
-      curFrame.width >= frame.width &&
-      curFrame.height >= frame.height) {
-    return;
-  }
-  await wc.setFrame(frame);
-  // An duration is needed to avoid the window being restored after fullscreen.
-  Future.delayed(Duration(milliseconds: 300), () async {
-    stateGlobal.setFullscreen(true);
-  });
-}
-
-parseParamScreenRect(Map<String, dynamic> params) {
-  Rect? screenRect;
-  if (params['screen_rect'] != null) {
-    double l = params['screen_rect']['l'];
-    double t = params['screen_rect']['t'];
-    double r = params['screen_rect']['r'];
-    double b = params['screen_rect']['b'];
-    screenRect = Rect.fromLTRB(l, t, r, b);
-  }
-  return screenRect;
-}
-
-get isInputSourceFlutter => stateGlobal.getInputSource() == "Input source 2";
-
-class _CountDownButton extends StatefulWidget {
-  _CountDownButton({
-    Key? key,
-    required this.text,
-    required this.second,
-    required this.onPressed,
-    this.submitOnTimeout = false,
-  }) : super(key: key);
-  final String text;
-  final VoidCallback? onPressed;
-  final int second;
-  final bool submitOnTimeout;
-
-  @override
-  State<_CountDownButton> createState() => _CountDownButtonState();
-}
-
-class _CountDownButtonState extends State<_CountDownButton> {
-  late int _countdownSeconds = widget.second;
-
-  Timer? _timer;
-
-  @override
-  void initState() {
-    super.initState();
-    _startCountdownTimer();
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  void _startCountdownTimer() {
-    _timer = Timer.periodic(Duration(seconds: 1), (timer) {
-      if (_countdownSeconds <= 0) {
-        timer.cancel();
-        if (widget.submitOnTimeout) {
-          widget.onPressed?.call();
-        }
-      } else {
-        setState(() {
-          _countdownSeconds--;
-        });
-      }
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return dialogButton(
-      '${translate(widget.text)} (${_countdownSeconds}s)',
-      onPressed: widget.onPressed,
-      isOutline: true,
-    );
-  }
-}
-
-importConfig(List<TextEditingController>? controllers, List<RxString>? errMsgs,
-    String? text) {
-  text = text?.trim();
-  if (text != null && text.isNotEmpty) {
-    try {
-      final sc = ServerConfig.decode(text);
-      if (isWeb || isIOS) {
-        sc.relayServer = '';
-      }
-      if (sc.idServer.isNotEmpty) {
-        Future<bool> success = setServerConfig(controllers, errMsgs, sc);
-        success.then((value) {
-          if (value) {
-            showToast(translate('Import server configuration successfully'));
-          } else {
-            showToast(translate('Invalid server configuration'));
-          }
-        });
-      } else {
-        showToast(translate('Invalid server configuration'));
-      }
-      return sc;
-    } catch (e) {
-      showToast(translate('Invalid server configuration'));
-    }
-  } else {
-    showToast(translate('Clipboard is empty'));
-  }
-}
-
-Future<bool> setServerConfig(
-  List<TextEditingController>? controllers,
-  List<RxString>? errMsgs,
-  ServerConfig config,
-) async {
-  String removeEndSlash(String input) {
-    if (input.endsWith('/')) {
-      return input.substring(0, input.length - 1);
-    }
-    return input;
-  }
-
-  config.idServer = removeEndSlash(config.idServer.trim());
-  config.relayServer = removeEndSlash(config.relayServer.trim());
-  config.apiServer = removeEndSlash(config.apiServer.trim());
-  config.key = config.key.trim();
-  if (controllers != null) {
-    controllers[0].text = config.idServer;
-    controllers[1].text = config.relayServer;
-    controllers[2].text = config.apiServer;
-    controllers[3].text = config.key;
-  }
-  // id
-  if (config.idServer.isNotEmpty && errMsgs != null) {
-    errMsgs[0].value = translate(await bind.mainTestIfValidServer(
-        server: config.idServer, testWithProxy: true));
-    if (errMsgs[0].isNotEmpty) {
-      return false;
-    }
-  }
-  // relay
-  if (config.relayServer.isNotEmpty && errMsgs != null) {
-    errMsgs[1].value = translate(await bind.mainTestIfValidServer(
-        server: config.relayServer, testWithProxy: true));
-    if (errMsgs[1].isNotEmpty) {
-      return false;
-    }
-  }
-  // api
-  if (config.apiServer.isNotEmpty && errMsgs != null) {
-    if (!config.apiServer.startsWith('http://') &&
-        !config.apiServer.startsWith('https://')) {
-      errMsgs[2].value =
-          '${translate("API Server")}: ${translate("invalid_http")}';
-      return false;
-    }
-  }
-  final oldApiServer = await bind.mainGetApiServer();
-
-  // should set one by one
-  await bind.mainSetOption(
-      key: 'custom-rendezvous-server', value: config.idServer);
-  await bind.mainSetOption(key: 'relay-server', value: config.relayServer);
-  await bind.mainSetOption(key: 'api-server', value: config.apiServer);
-  await bind.mainSetOption(key: 'key', value: config.key);
-  final newApiServer = await bind.mainGetApiServer();
-  if (oldApiServer.isNotEmpty &&
-      oldApiServer != newApiServer &&
-      gFFI.userModel.isLogin) {
-    gFFI.userModel.logOut(apiServer: oldApiServer);
-  }
-  return true;
-}
-
-ColorFilter? svgColor(Color? color) {
-  if (color == null) {
-    return null;
-  } else {
-    return ColorFilter.mode(color, BlendMode.srcIn);
-  }
-}
-
-// ignore: must_be_immutable
-class ComboBox extends StatelessWidget {
-  late final List<String> keys;
-  late final List<String> values;
-  late final String initialKey;
-  late final Function(String key) onChanged;
-  late final bool enabled;
-  late String current;
-
-  ComboBox({
-    Key? key,
-    required this.keys,
-    required this.values,
-    required this.initialKey,
-    required this.onChanged,
-    this.enabled = true,
-  }) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) {
-    var index = keys.indexOf(initialKey);
-    if (index < 0) {
-      index = 0;
-    }
-    var ref = values[index].obs;
-    current = keys[index];
-    return Container(
-      decoration: BoxDecoration(
-        border: Border.all(
-          color: enabled
-              ? MyTheme.color(context).border2 ?? MyTheme.border
-              : MyTheme.border,
-        ),
-        borderRadius:
-            BorderRadius.circular(8), //border raiuds of dropdown button
-      ),
-      height: 42, // should be the height of a TextField
-      child: Obx(() => DropdownButton<String>(
-            isExpanded: true,
-            value: ref.value,
-            elevation: 16,
-            underline: Container(),
-            style: TextStyle(
-                color: enabled
-                    ? Theme.of(context).textTheme.titleMedium?.color
-                    : disabledTextColor(context, enabled)),
-            icon: const Icon(
-              Icons.expand_more_sharp,
-              size: 20,
-            ).marginOnly(right: 15),
-            onChanged: enabled
-                ? (String? newValue) {
-                    if (newValue != null && newValue != ref.value) {
-                      ref.value = newValue;
-                      current = newValue;
-                      onChanged(keys[values.indexOf(newValue)]);
+    // Interestingly, on my macOS, sometimes my ipv6 works, sometimes not (test with ping6 or https://test-ipv6.com/).
+    // I checked ifconfig, could not see any difference. Both secure ipv6 and temporary ipv6 are there.
+    // So we can not rely on the local ipv6 address queries with if_addrs.
+    // above test_bind_ipv6 is safer, because it can fail in this case.
+    /*
+    std::thread::spawn(|| {
+        if let Ok(ifaces) = if_addrs::get_if_addrs() {
+            for iface in ifaces {
+                if let if_addrs::IfAddr::V6(v6) = iface.addr {
+                    let ip = v6.ip;
+                    if !ip.is_loopback()
+                        && !ip.is_unspecified()
+                        && !ip.is_multicast()
+                        && !ip.is_unique_local()
+                        && !ip.is_unicast_link_local()
+                        && (ip.segments()[0] & 0xe000) == 0x2000
+                    {
+                        // only use the first one, on mac, the first one is the stable
+                        // one, the last one is the temporary one. The middle ones are deperecated.
+                        *PUBLIC_IPV6_ADDR.lock().unwrap() =
+                            Some((SocketAddr::from((ip, 0)), Instant::now()));
+                        log::debug!("Found public IPv6 address locally: {}", ip);
+                        break;
                     }
-                  }
-                : null,
-            items: values.map<DropdownMenuItem<String>>((String value) {
-              return DropdownMenuItem<String>(
-                value: value,
-                child: Text(
-                  value,
-                  style: const TextStyle(fontSize: 15),
-                  overflow: TextOverflow.ellipsis,
-                ).marginOnly(left: 15),
-              );
-            }).toList(),
-          )),
-    ).marginOnly(bottom: 5);
-  }
-}
-
-Color? disabledTextColor(BuildContext context, bool enabled) {
-  return enabled
-      ? null
-      : Theme.of(context).textTheme.titleLarge?.color?.withOpacity(0.6);
-}
-
-Widget loadPowered(BuildContext context) {
-  if (bind.mainGetBuildinOption(key: "hide-powered-by-me") == 'Y') {
-    return SizedBox.shrink();
-  }
-  return MouseRegion(
-    cursor: SystemMouseCursors.click,
-    child: GestureDetector(
-      onTap: () {
-        launchUrl(Uri.parse('https://rustdesk.com'));
-      },
-      child: Opacity(
-          opacity: 0.5,
-          child: Text(
-            translate("powered_by_me"),
-            overflow: TextOverflow.clip,
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(fontSize: 9, decoration: TextDecoration.underline),
-          )),
-    ),
-  ).marginOnly(top: 6);
-}
-
-// max 300 x 60
-Widget loadLogo() {
-  return FutureBuilder<ByteData>(
-      future: rootBundle.load('assets/logo.png'),
-      builder: (BuildContext context, AsyncSnapshot<ByteData> snapshot) {
-        if (snapshot.hasData) {
-          final image = Image.asset(
-            'assets/logo.png',
-            fit: BoxFit.contain,
-            errorBuilder: (ctx, error, stackTrace) {
-              return Container();
-            },
-          );
-          return Container(
-            constraints: BoxConstraints(maxWidth: 300, maxHeight: 60),
-            child: image,
-          ).marginOnly(left: 12, right: 12, top: 12);
+                }
+            }
         }
-        return const Offstage();
-      });
-}
-
-Widget loadIcon(double size) {
-  return Image.asset('assets/icon.png',
-      width: size,
-      height: size,
-      errorBuilder: (ctx, error, stackTrace) => SvgPicture.asset(
-            'assets/icon.svg',
-            width: size,
-            height: size,
-          ));
-}
-
-var imcomingOnlyHomeSize = Size(280, 300);
-Size getIncomingOnlyHomeSize() {
-  final magicWidth = isWindows ? 11.0 : 2.0;
-  final magicHeight = 10.0;
-  return imcomingOnlyHomeSize +
-      Offset(magicWidth, kDesktopRemoteTabBarHeight + magicHeight);
-}
-
-Size getIncomingOnlySettingsSize() {
-  return Size(768, 600);
-}
-
-bool isInHomePage() {
-  final controller = Get.find<DesktopTabController>();
-  return controller.state.value.selected == 0;
-}
-
-Widget _buildPresetPasswordWarning() {
-  if (bind.mainGetBuildinOption(key: kOptionRemovePresetPasswordWarning) !=
-      'N') {
-    return SizedBox.shrink();
-  }
-  return Container(
-    color: Colors.yellow,
-    child: Column(
-      children: [
-        Align(
-            child: Text(
-          translate("Security Alert"),
-          style: TextStyle(
-            color: Colors.red,
-            fontSize:
-                18, // https://github.com/rustdesk/rustdesk-server-pro/issues/261
-            fontWeight: FontWeight.bold,
-          ),
-        )).paddingOnly(bottom: 8),
-        Text(
-          translate("preset_password_warning"),
-          style: TextStyle(color: Colors.red),
-        )
-      ],
-    ).paddingAll(8),
-  ); // Show a warning message if the Future completed with true
-}
-
-Widget buildPresetPasswordWarningMobile() {
-  if (bind.isPresetPasswordMobileOnly()) {
-    return _buildPresetPasswordWarning();
-  } else {
-    return SizedBox.shrink();
-  }
-}
-
-Widget buildPresetPasswordWarning() {
-  return FutureBuilder<bool>(
-    future: bind.isPresetPassword(),
-    builder: (BuildContext context, AsyncSnapshot<bool> snapshot) {
-      if (snapshot.connectionState == ConnectionState.waiting) {
-        return CircularProgressIndicator(); // Show a loading spinner while waiting for the Future to complete
-      } else if (snapshot.hasError) {
-        return Text(
-            'Error: ${snapshot.error}'); // Show an error message if the Future completed with an error
-      } else if (snapshot.hasData && snapshot.data == true) {
-        return _buildPresetPasswordWarning();
-      } else {
-        return SizedBox
-            .shrink(); // Show nothing if the Future completed with false or null
-      }
-    },
-  );
-}
-
-// https://github.com/leanflutter/window_manager/blob/87dd7a50b4cb47a375b9fc697f05e56eea0a2ab3/lib/src/widgets/virtual_window_frame.dart#L44
-Widget buildVirtualWindowFrame(BuildContext context, Widget child) {
-  boxShadow() => isMainDesktopWindow
-      ? <BoxShadow>[
-          if (stateGlobal.fullscreen.isFalse || stateGlobal.isMaximized.isFalse)
-            BoxShadow(
-              color: Colors.black.withOpacity(0.1),
-              offset: Offset(
-                  0.0,
-                  stateGlobal.isFocused.isTrue
-                      ? kFrameBoxShadowOffsetFocused
-                      : kFrameBoxShadowOffsetUnfocused),
-              blurRadius: kFrameBoxShadowBlurRadius,
-            ),
-        ]
-      : null;
-  return Obx(
-    () => Container(
-      decoration: BoxDecoration(
-        color: isMainDesktopWindow
-            ? Colors.transparent
-            : Theme.of(context).colorScheme.background,
-        border: Border.all(
-          color: Theme.of(context).dividerColor,
-          width: stateGlobal.windowBorderWidth.value,
-        ),
-        borderRadius: BorderRadius.circular(
-          (stateGlobal.fullscreen.isTrue || stateGlobal.isMaximized.isTrue)
-              ? 0
-              : kFrameBorderRadius,
-        ),
-        boxShadow: boxShadow(),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(
-          (stateGlobal.fullscreen.isTrue || stateGlobal.isMaximized.isTrue)
-              ? 0
-              : kFrameClipRRectBorderRadius,
-        ),
-        child: child,
-      ),
-    ),
-  );
-}
-
-get windowResizeEdgeSize =>
-    isLinux && !_linuxWindowResizable ? 0.0 : kWindowResizeEdgeSize;
-
-// `windowManager.setResizable(false)` will reset the window size to the default size on Linux and then set unresizable.
-// See _linuxWindowResizable for more details.
-// So we use `setResizable()` instead of `windowManager.setResizable()`.
-//
-// We can only call `windowManager.setResizable(false)` if we need the default size on Linux.
-setResizable(bool resizable) {
-  if (isLinux) {
-    _linuxWindowResizable = resizable;
-    stateGlobal.refreshResizeEdgeSize();
-  } else {
-    windowManager.setResizable(resizable);
-  }
-}
-
-isOptionFixed(String key) => bind.mainIsOptionFixed(key: key);
-
-bool isChangePermanentPasswordDisabled() =>
-    bind.mainGetBuildinOption(key: kOptionDisableChangePermanentPassword) ==
-    'Y';
-
-bool isChangeIdDisabled() =>
-    bind.mainGetBuildinOption(key: kOptionDisableChangeId) == 'Y';
-
-bool isUnlockPinDisabled() =>
-    bind.mainGetBuildinOption(key: kOptionDisableUnlockPin) == 'Y';
-
-bool? _isCustomClient;
-bool get isCustomClient {
-  _isCustomClient ??= bind.isCustomClient();
-  return _isCustomClient!;
-}
-
-get defaultOptionLang => isCustomClient ? 'default' : '';
-get defaultOptionTheme => isCustomClient ? 'system' : '';
-get defaultOptionYes => isCustomClient ? 'Y' : '';
-get defaultOptionNo => isCustomClient ? 'N' : '';
-get defaultOptionWhitelist => isCustomClient ? ',' : '';
-get defaultOptionAccessMode => isCustomClient ? 'custom' : '';
-get defaultOptionApproveMode => isCustomClient ? 'password-click' : '';
-
-bool whitelistNotEmpty() {
-  // https://rustdesk.com/docs/en/self-host/client-configuration/advanced-settings/#whitelist
-  final v = bind.mainGetOptionSync(key: kOptionWhitelist);
-  return v != '' && v != ',';
-}
-
-// `setMovable()` is only supported on macOS.
-//
-// On macOS, the window can be dragged by the tab bar by default.
-// We need to disable the movable feature to prevent the window from being dragged by the tabs in the tab bar.
-//
-// When we drag the blank tab bar (not the tab), the window will be dragged normally by adding the `onPanStart` handle.
-//
-// See the following code for more details:
-// https://github.com/rustdesk/rustdesk/blob/ce1dac3b8613596b4d8ae981275f9335489eb935/flutter/lib/desktop/widgets/tabbar_widget.dart#L385
-// https://github.com/rustdesk/rustdesk/blob/ce1dac3b8613596b4d8ae981275f9335489eb935/flutter/lib/desktop/widgets/tabbar_widget.dart#L399
-//
-// @platforms macos
-disableWindowMovable(int? windowId) {
-  if (!isMacOS) {
-    return;
-  }
-
-  if (windowId == null) {
-    windowManager.setMovable(false);
-  } else {
-    WindowController.fromWindowId(windowId).setMovable(false);
-  }
-}
-
-Widget netWorkErrorWidget() {
-  return Center(
-      child: Column(
-    mainAxisAlignment: MainAxisAlignment.center,
-    crossAxisAlignment: CrossAxisAlignment.center,
-    children: [
-      Text(translate("network_error_tip")),
-      ElevatedButton(
-              onPressed: gFFI.userModel.refreshCurrentUser,
-              child: Text(translate("Retry")))
-          .marginSymmetric(vertical: 16),
-      SelectableText(gFFI.userModel.networkError.value,
-          style: TextStyle(fontSize: 11, color: Colors.red)),
-    ],
-  ));
-}
-
-List<ResizeEdge>? get windowManagerEnableResizeEdges => isWindows
-    ? [
-        ResizeEdge.topLeft,
-        ResizeEdge.top,
-        ResizeEdge.topRight,
-      ]
-    : null;
-
-List<SubWindowResizeEdge>? get subWindowManagerEnableResizeEdges => isWindows
-    ? [
-        SubWindowResizeEdge.topLeft,
-        SubWindowResizeEdge.top,
-        SubWindowResizeEdge.topRight,
-      ]
-    : null;
-
-void earlyAssert() {
-  assert('\1' == '1');
-}
-
-void checkUpdate() {
-  if (!isWeb) {
-    // 移除对自定义客户端的检查，让自定义客户端也能处理自动更新事件
-    platformFFI.registerEventHandler(
-        kCheckSoftwareUpdateFinish, kCheckSoftwareUpdateFinish,
-        (Map<String, dynamic> evt) async {
-      if (evt['url'] is String) {
-        stateGlobal.updateUrl.value = evt['url'];
-      }
     });
-    Timer(const Duration(seconds: 1), () async {
-      bind.mainGetSoftwareUpdateUrl();
-    });
-  }
+    */
+
+    Some(tokio::spawn(async {
+        use hbb_common::futures::future::{select_ok, FutureExt};
+        let tests = STUNS_V6
+            .iter()
+            .map(|&stun| stun_ipv6_test(stun).boxed())
+            .collect::<Vec<_>>();
+
+        match select_ok(tests).await {
+            Ok(res) => {
+                let mut addr = res.0 .0;
+                addr.set_port(0); // Set port to 0 to avoid conflicts
+                PUBLIC_IPV6_ADDR.lock().unwrap().0 = Some(addr);
+                log::debug!(
+                    "Found public IPv6 address via STUN server {}: {}",
+                    res.0 .1,
+                    addr
+                );
+            }
+            Err(e) => {
+                log::error!("Failed to get public IPv6 address: {}", e);
+            }
+        };
+    }))
 }
 
-// https://github.com/flutter/flutter/issues/153560#issuecomment-2497160535
-// For TextField, TextFormField
-extension WorkaroundFreezeLinuxMint on Widget {
-  Widget workaroundFreezeLinuxMint() {
-    // No need to check if is Linux Mint, because this workaround is harmless on other platforms.
-    if (isLinux) {
-      return ExcludeSemantics(child: this);
-    } else {
-      return this;
+pub async fn punch_udp(
+    socket: Arc<UdpSocket>,
+    listen: bool,
+) -> ResultType<Option<bytes::BytesMut>> {
+    let mut retry_interval = Duration::from_millis(20);
+    const MAX_INTERVAL: Duration = Duration::from_millis(200);
+    const MAX_TIME: Duration = Duration::from_secs(20);
+    let mut packets_sent = 0;
+    socket.send(&[]).await.ok();
+    packets_sent += 1;
+    let mut last_send_time = Instant::now();
+    let tm = Instant::now();
+    let mut data = [0u8; 1500];
+
+    loop {
+        tokio::select! {
+            _ = hbb_common::sleep(retry_interval.as_secs_f32()) => {
+                if tm.elapsed() > MAX_TIME {
+                    bail!("UDP punch is timed out, stop sending packets after {:?} packets", packets_sent);
+                }
+                let elapsed = last_send_time.elapsed();
+
+                if elapsed >= retry_interval {
+                    socket.send(&[]).await.ok();
+                    packets_sent += 1;
+
+                    // Exponentially increase interval to reduce network pressure
+                    retry_interval = std::cmp::min(
+                        Duration::from_millis((retry_interval.as_millis() as f64 * 1.5) as u64),
+                        MAX_INTERVAL
+                    );
+                    last_send_time = Instant::now();
+                }
+            }
+            res = socket.recv(&mut data) => match res {
+                Err(e) => bail!("UDP punch failed, {packets_sent} packets sent: {e}"),
+                Ok(n) => {
+                    // log::debug!("UDP punch succeeded after sending {} packets after {:?}", packets_sent, tm.elapsed());
+                    if listen {
+                        if n == 0 {
+                            continue;
+                        }
+                        return Ok(Some(bytes::BytesMut::from(&data[..n])));
+                    }
+                    return Ok(None);
+                }
+            }
+        }
     }
-  }
 }
 
-// Don't use `extension` here, the border looks weird if using `extension` in my test.
-Widget workaroundWindowBorder(BuildContext context, Widget child) {
-  if (!isWin10) {
-    return child;
-  }
-
-  final isLight = Theme.of(context).brightness == Brightness.light;
-  final borderColor = isLight ? Colors.black87 : Colors.grey;
-  final width = isLight ? 0.5 : 0.1;
-
-  getBorderWidget(Widget child) {
-    return Obx(() =>
-        (stateGlobal.isMaximized.isTrue || stateGlobal.fullscreen.isTrue)
-            ? Offstage()
-            : child);
-  }
-
-  final List<Widget> borders = [
-    getBorderWidget(Container(
-      color: borderColor,
-      height: width + 0.1,
-    ))
-  ];
-  if (kWindowType == WindowType.Main && !isLight) {
-    borders.addAll([
-      getBorderWidget(Align(
-        alignment: Alignment.topLeft,
-        child: Container(
-          color: borderColor,
-          width: width,
-        ),
-      )),
-      getBorderWidget(Align(
-        alignment: Alignment.topRight,
-        child: Container(
-          color: borderColor,
-          width: width,
-        ),
-      )),
-      getBorderWidget(Align(
-        alignment: Alignment.bottomCenter,
-        child: Container(
-          color: borderColor,
-          height: width,
-        ),
-      )),
-    ]);
-  }
-  return Stack(
-    children: [
-      child,
-      ...borders,
-    ],
-  );
+fn test_ipv6_sync() {
+    #[tokio::main(flavor = "current_thread")]
+    async fn func() {
+        if let Some(job) = test_ipv6().await {
+            job.await.ok();
+        }
+    }
+    std::thread::spawn(func);
 }
 
-void updateTextAndPreserveSelection(
-    TextEditingController controller, String text) {
-  // Only care about select all for now.
-  final isSelected = controller.selection.isValid &&
-      controller.selection.end > controller.selection.start;
+pub async fn get_ipv6_socket() -> Option<(Arc<UdpSocket>, bytes::Bytes)> {
+    let Some(addr) = PUBLIC_IPV6_ADDR.lock().unwrap().0 else {
+        return None;
+    };
 
-  // Set text will make the selection invalid.
-  controller.text = text;
-
-  if (isSelected) {
-    controller.selection = TextSelection(
-        baseOffset: 0, extentOffset: controller.value.text.length);
-  }
+    match UdpSocket::bind(addr).await {
+        Err(err) => {
+            log::warn!("Failed to create UDP socket for IPv6: {err}");
+        }
+        Ok(socket) => {
+            if let Ok(local_addr_v6) = socket.local_addr() {
+                return Some((
+                    Arc::new(socket),
+                    hbb_common::AddrMangle::encode(local_addr_v6).into(),
+                ));
+            }
+        }
+    }
+    None
 }
 
-List<String> getPrinterNames() {
-  final printerNamesJson = bind.mainGetPrinterNames();
-  if (printerNamesJson.isEmpty) {
-    return [];
-  }
-  try {
-    final List<dynamic> printerNamesList = jsonDecode(printerNamesJson);
-    final appPrinterName = '$appName Printer';
-    return printerNamesList
-        .map((e) => e.toString())
-        .where((name) => name != appPrinterName)
-        .toList();
-  } catch (e) {
-    debugPrint('failed to parse printer names, err: $e');
-    return [];
-  }
+// The color is the same to `str2color()` in flutter.
+pub fn str2color(s: &str, alpha: u8) -> u32 {
+    let bytes = s.as_bytes();
+    // dart code `160 << 16 + 114 << 8 + 91` results `0`.
+    let mut hash: u32 = 0;
+    for &byte in bytes {
+        let code = byte as u32;
+        hash = code.wrapping_add((hash << 5).wrapping_sub(hash));
+    }
+
+    hash = hash % 16777216;
+    let rgb = hash & 0xFF7FFF;
+
+    (alpha as u32) << 24 | rgb
 }
 
-String _appName = '';
-String get appName {
-  if (_appName.isEmpty) {
-    _appName = bind.mainGetAppNameSync();
-  }
-  return _appName;
+/// Check control permission state from a u64 bitmap.
+/// Each permission uses 2 bits: 0 = not set, 1 = disable, 2 = enable, 3 = invalid (treated as not set)
+/// Returns: Some(true) = enabled, Some(false) = disabled, None = not set or invalid
+pub fn get_control_permission(
+    permissions: u64,
+    permission: hbb_common::rendezvous_proto::control_permissions::Permission,
+) -> Option<bool> {
+    use hbb_common::protobuf::Enum;
+    let index = permission.value();
+    if index >= 0 && index < 32 {
+        let shift = index * 2;
+        let value = (permissions >> shift) & 0b11;
+        match value {
+            1 => Some(false), // disable
+            2 => Some(true),  // enable
+            _ => None,        // 0 = not set, 3 = invalid
+        }
+    } else {
+        None
+    }
 }
 
-String getConnectionText(bool secure, bool direct, String streamType) {
-  String connectionText;
-  if (secure && direct) {
-    connectionText = translate("Direct and encrypted connection");
-  } else if (secure && !direct) {
-    connectionText = translate("Relayed and encrypted connection");
-  } else if (!secure && direct) {
-    connectionText = translate("Direct and unencrypted connection");
-  } else {
-    connectionText = translate("Relayed and unencrypted connection");
-  }
-  if (streamType == 'Relay') {
-    streamType = 'TCP';
-  }
-  if (streamType.isEmpty) {
-    return connectionText;
-  } else {
-    return '$connectionText ($streamType)';
-  }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hbb_common::tokio::{
+        self,
+        time::{interval, interval_at, sleep, Duration, Instant, Interval},
+    };
+    use std::collections::HashSet;
 
-String decode_http_response(http.Response resp) {
-  try {
-    // https://github.com/rustdesk/rustdesk-server-pro/discussions/758
-    return utf8.decode(resp.bodyBytes, allowMalformed: true);
-  } catch (e) {
-    debugPrint('Failed to decode response as UTF-8: $e');
-    // Fallback to bodyString which handles encoding automatically
-    return resp.body;
-  }
-}
+    #[inline]
+    fn get_timestamp_secs() -> u128 {
+        (std::time::SystemTime::UNIX_EPOCH
+            .elapsed()
+            .unwrap()
+            .as_millis()
+            + 500)
+            / 1000
+    }
 
-bool peerTabShowNote(PeerTabIndex peerTabIndex) {
-  return peerTabIndex == PeerTabIndex.ab || peerTabIndex == PeerTabIndex.group;
-}
+    fn interval_maker() -> Interval {
+        interval(Duration::from_secs(1))
+    }
 
-// TODO: We should support individual bits combinations in the future.
-// But for now, just keep it simple, because the old code only supports single button.
-// No users have requested multi-button support yet.
-String mouseButtonsToPeer(int buttons) {
-  switch (buttons) {
-    case kPrimaryMouseButton:
-      return 'left';
-    case kSecondaryMouseButton:
-      return 'right';
-    case kMiddleMouseButton:
-      return 'wheel';
-    case kBackMouseButton:
-      return 'back';
-    case kForwardMouseButton:
-      return 'forward';
-    default:
-      return '';
-  }
+    fn interval_at_maker() -> Interval {
+        interval_at(
+            Instant::now() + Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+    }
+
+    // ThrottledInterval tick at the same time as tokio interval, if no sleeps
+    #[allow(non_snake_case)]
+    #[tokio::test]
+    async fn test_RustDesk_interval() {
+        let base_intervals = [interval_maker, interval_at_maker];
+        for maker in base_intervals.into_iter() {
+            let mut tokio_timer = maker();
+            let mut tokio_times = Vec::new();
+            let mut timer = rustdesk_interval(maker());
+            let mut times = Vec::new();
+            loop {
+                tokio::select! {
+                    _ = timer.tick() => {
+                        if tokio_times.len() >= 10 && times.len() >= 10 {
+                            break;
+                        }
+                        times.push(get_timestamp_secs());
+                    }
+                    _ = tokio_timer.tick() => {
+                        if tokio_times.len() >= 10 && times.len() >= 10 {
+                            break;
+                        }
+                        tokio_times.push(get_timestamp_secs());
+                    }
+                }
+            }
+            assert_eq!(times, tokio_times);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tokio_time_interval_sleep() {
+        let mut timer = interval_maker();
+        let mut times = Vec::new();
+        sleep(Duration::from_secs(3)).await;
+        loop {
+            tokio::select! {
+                _ = timer.tick() => {
+                    times.push(get_timestamp_secs());
+                    if times.len() == 5 {
+                        break;
+                    }
+                }
+            }
+        }
+        let times2: HashSet<u128> = HashSet::from_iter(times.clone());
+        assert_eq!(times.len(), times2.len() + 3);
+    }
+
+    // ThrottledInterval tick less times than tokio interval, if there're sleeps
+    #[allow(non_snake_case)]
+    #[tokio::test]
+    async fn test_RustDesk_interval_sleep() {
+        let base_intervals = [interval_maker, interval_at_maker];
+        for (i, maker) in base_intervals.into_iter().enumerate() {
+            let mut timer = rustdesk_interval(maker());
+            let mut times = Vec::new();
+            sleep(Duration::from_secs(3)).await;
+            loop {
+                tokio::select! {
+                    _ = timer.tick() => {
+                        times.push(get_timestamp_secs());
+                        if times.len() == 5 {
+                            break;
+                        }
+                    }
+                }
+            }
+            // No multiple ticks in the `interval` time.
+            // Values in "times" are unique and are less than normal tokio interval.
+            // See previous test (test_tokio_time_interval_sleep) for comparison.
+            let times2: HashSet<u128> = HashSet::from_iter(times.clone());
+            assert_eq!(times.len(), times2.len(), "test: {}", i);
+        }
+    }
+
+    #[test]
+    fn test_duration_multiplication() {
+        let dur = Duration::from_secs(1);
+
+        assert_eq!(dur * 2, Duration::from_secs(2));
+        assert_eq!(
+            Duration::from_secs_f64(dur.as_secs_f64() * 0.9),
+            Duration::from_millis(900)
+        );
+        assert_eq!(
+            Duration::from_secs_f64(dur.as_secs_f64() * 0.923),
+            Duration::from_millis(923)
+        );
+        assert_eq!(
+            Duration::from_secs_f64(dur.as_secs_f64() * 0.923 * 1e-3),
+            Duration::from_micros(923)
+        );
+        assert_eq!(
+            Duration::from_secs_f64(dur.as_secs_f64() * 0.923 * 1e-6),
+            Duration::from_nanos(923)
+        );
+        assert_eq!(
+            Duration::from_secs_f64(dur.as_secs_f64() * 0.923 * 1e-9),
+            Duration::from_nanos(1)
+        );
+        assert_eq!(
+            Duration::from_secs_f64(dur.as_secs_f64() * 0.5 * 1e-9),
+            Duration::from_nanos(1)
+        );
+        assert_eq!(
+            Duration::from_secs_f64(dur.as_secs_f64() * 0.499 * 1e-9),
+            Duration::from_nanos(0)
+        );
+    }
+
+    #[test]
+    fn test_is_public() {
+        // Test URLs containing "rustdesk.com/"
+        assert!(is_public("https://rustdesk.com/"));
+        assert!(is_public("https://www.rustdesk.com/"));
+        assert!(is_public("https://api.rustdesk.com/v1"));
+        assert!(is_public("https://rustdesk.com/path"));
+
+        // Test URLs ending with "rustdesk.com"
+        assert!(is_public("rustdesk.com"));
+        assert!(is_public("https://rustdesk.com"));
+        assert!(is_public("http://www.rustdesk.com"));
+        assert!(is_public("https://api.rustdesk.com"));
+
+        // Test non-public URLs
+        assert!(!is_public("https://example.com"));
+        assert!(!is_public("https://custom-server.com"));
+        assert!(!is_public("http://192.168.1.1"));
+        assert!(!is_public("localhost"));
+        assert!(!is_public("https://rustdesk.computer.com"));
+        assert!(!is_public("rustdesk.comhello.com"));
+    }
+
+    #[test]
+    fn test_mouse_event_constants_and_mask_layout() {
+        use super::input::*;
+
+        // Verify MOUSE_TYPE constants are unique and within the mask range.
+        let types = [
+            MOUSE_TYPE_MOVE,
+            MOUSE_TYPE_DOWN,
+            MOUSE_TYPE_UP,
+            MOUSE_TYPE_WHEEL,
+            MOUSE_TYPE_TRACKPAD,
+            MOUSE_TYPE_MOVE_RELATIVE,
+        ];
+
+        let mut seen = std::collections::HashSet::new();
+        for t in types.iter() {
+            assert!(seen.insert(*t), "Duplicate mouse type: {}", t);
+            assert_eq!(
+                *t & MOUSE_TYPE_MASK,
+                *t,
+                "Mouse type {} exceeds mask {}",
+                t,
+                MOUSE_TYPE_MASK
+            );
+        }
+
+        // The mask layout is: lower 3 bits for type, upper bits for buttons (shifted by 3).
+        let combined_mask = MOUSE_TYPE_DOWN | ((MOUSE_BUTTON_LEFT | MOUSE_BUTTON_RIGHT) << 3);
+        assert_eq!(combined_mask & MOUSE_TYPE_MASK, MOUSE_TYPE_DOWN);
+        assert_eq!(combined_mask >> 3, MOUSE_BUTTON_LEFT | MOUSE_BUTTON_RIGHT);
+    }
 }
