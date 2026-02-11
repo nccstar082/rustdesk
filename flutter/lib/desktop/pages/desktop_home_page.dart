@@ -60,7 +60,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   Widget build(BuildContext context) {
     super.build(context);
     final isIncomingOnly = bind.isIncomingOnly();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _updateWindowSize());
     return _buildBlock(
         child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -71,7 +70,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       ],
     ));
   }
-  
+
   Widget _buildBlock({required Widget child}) {
     return buildRemoteBlock(
         block: _block, mask: true, use: canBeBlocked, child: child);
@@ -96,16 +95,17 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       if (!isOutgoingOnly) buildPasswordBoard(context),
       FutureBuilder<Widget>(
         future: Future.value(
-            Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
-        builder: (_, data) {
-          if (data.hasData) {
-            if (isIncomingOnly) {
+            Obx(() {
+              final widget = buildHelpCards(stateGlobal.updateUrl.value);
               if (isInHomePage()) {
                 Future.delayed(Duration(milliseconds: 300), () {
                   _updateWindowSize();
                 });
               }
-            }
+              return widget;
+            })),
+        builder: (_, data) {
+          if (data.hasData) {
             return data.data!;
           } else {
             return const Offstage();
