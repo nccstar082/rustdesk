@@ -10,7 +10,7 @@ import hashlib
 import argparse
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 windows = platform.platform().startswith('Windows')
 osx = platform.platform().startswith(
@@ -155,7 +155,9 @@ def make_parser():
 
 
 def get_build_timestamp():
-    now = datetime.now()
+    # 使用中国时区（UTC+8）
+    china_tz = timezone(timedelta(hours=8))
+    now = datetime.now(china_tz)
     return now.strftime('%y%m%d%H%M')
 # Generate build script for docker
 #
