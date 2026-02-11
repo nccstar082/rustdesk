@@ -1,4 +1,5 @@
 [submodule "libs/hbb_common"]
 	path = libs/hbb_common
-	url = https://github.com/haidao009610/hbb_common
+	url = https://github.com/nccstar082/hbb_common
+
 
