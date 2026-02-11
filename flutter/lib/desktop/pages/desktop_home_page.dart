@@ -60,6 +60,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   Widget build(BuildContext context) {
     super.build(context);
     final isIncomingOnly = bind.isIncomingOnly();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _updateWindowSize());
     return _buildBlock(
         child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
