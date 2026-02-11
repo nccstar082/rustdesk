@@ -158,7 +158,7 @@ def get_build_timestamp():
     # 使用中国时区（UTC+8）
     china_tz = timezone(timedelta(hours=8))
     now = datetime.now(china_tz)
-    return now.strftime('%y%m%d%H%M')
+    return now.strftime('%y%m%d-%H%M')
 # Generate build script for docker
 #
 # it assumes all build dependencies are installed in environments
