@@ -70,7 +70,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       ],
     ));
   }
-
+  
   Widget _buildBlock({required Widget child}) {
     return buildRemoteBlock(
         block: _block, mask: true, use: canBeBlocked, child: child);
