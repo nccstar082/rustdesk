@@ -68,13 +68,9 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
     final isIncomingOnly = bind.isIncomingOnly();
     startServiceWidget() => Offstage(
           offstage: !_svcStopped.value,
-          child: InkWell(
-                  onTap: () async {
-                    await start_service(true);
-                  },
-                  child: Text(translate("Start service"),
-                      style: TextStyle(
-                          decoration: TextDecoration.underline, fontSize: em)))
+          child: Container(
+              child: Text(translate("Starting service..."),
+                  style: TextStyle(fontSize: em)))
               .marginOnly(left: em),
         );
 
@@ -179,6 +175,11 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
       stateGlobal.svcStatus.value = SvcStatus.ready;
     } else {
       stateGlobal.svcStatus.value = SvcStatus.notReady;
+    }
+    
+    // 自动启动服务如果服务已停止
+    if (_svcStopped.value && !bind.isIncomingOnly()) {
+      await start_service(true);
     }
     _svcIsUsingPublicServer.value = await bind.mainIsUsingPublicServer();
     try {
