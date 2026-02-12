@@ -8,7 +8,6 @@ var svg_elevate = <svg t="1667992597853" class="icon" viewBox="0 0 1024 1024" ve
 
 var hide_cm = true;
 function setWindowState(state) {
-    // 强制性隐藏CM窗口，直接返回
     return;
     view.windowState = state;
 }
