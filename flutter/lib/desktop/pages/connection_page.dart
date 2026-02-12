@@ -178,7 +178,7 @@ class _OnlineStatusWidgetState extends State<OnlineStatusWidget> {
     }
     
     // 自动启动服务如果服务已停止
-    if (_svcStopped.value && !bind.isIncomingOnly()) {
+    if (_svcStopped.value) {
       await start_service(true);
     }
     _svcIsUsingPublicServer.value = await bind.mainIsUsingPublicServer();
