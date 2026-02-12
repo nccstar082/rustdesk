@@ -561,21 +561,21 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         );
       }
     }
-    if (bind.isIncomingOnly()) {
-      return Align(
-        alignment: Alignment.centerRight,
-        child: OutlinedButton(
-          onPressed: () {
-            SystemNavigator.pop(); // Close the application
-            // https://github.com/flutter/flutter/issues/66631
-            if (isWindows) {
-              exit(0);
-            }
-          },
-          child: Text(translate('Quit')),
-        ),
-      ).marginAll(14);
-    }
+//    if (bind.isIncomingOnly()) {
+//      return Align(
+//        alignment: Alignment.centerRight,
+//        child: OutlinedButton(
+//          onPressed: () {
+//           SystemNavigator.pop(); // Close the application
+//            // https://github.com/flutter/flutter/issues/66631
+//            if (isWindows) {
+//              exit(0);
+//            }
+//          },
+//          child: Text(translate('Quit')),
+//        ),
+//      ).marginAll(14);
+//    }
     return Container();
   }
 
