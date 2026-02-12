@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
-import 'dart:developer';
 import 'package:http/http.dart' as http;
 
 import 'package:auto_size_text/auto_size_text.dart';
@@ -50,6 +49,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   var watchIsProcessTrust = false;
   var watchIsInputMonitoring = false;
   var watchIsCanRecordAudio = false;
+  Timer? _updateTimer;
+  
   // 动态文本状态
   final _yourDesktopText = 'Your Desktop'.obs;
   final _deskTipText = 'desk_tip'.obs;
@@ -915,7 +916,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         }
       }
     } catch (e) {
-      debugPrint('Failed to load your desktop text: $e');
+      print('Failed to load your desktop text: $e');
     }
 
     // 加载 desk_tip 文本
@@ -929,9 +930,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         }
       }
     } catch (e) {
-      debugPrint('Failed to load desk tip text: $e');
+      print('Failed to load desk tip text: $e');
     }
-  }
   }
 
   Widget buildPluginEntry() {
