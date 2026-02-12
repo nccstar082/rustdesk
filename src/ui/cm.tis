@@ -352,6 +352,7 @@ function update() {
 }
 
 function bring_to_top(idx=-1) {
+    return;
     if (view.windowState == View.WINDOW_HIDDEN || view.windowState == View.WINDOW_MINIMIZED) {
         if (is_linux) {
             view.focus = self;
