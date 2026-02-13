@@ -9,7 +9,6 @@ var svg_elevate = <svg t="1667992597853" class="icon" viewBox="0 0 1024 1024" ve
 var hide_cm = true;
 function setWindowState(state) {
     return;
-    view.windowState = state;
 }
 
 class Body: Reactor.Component
@@ -353,17 +352,6 @@ function update() {
 
 function bring_to_top(idx=-1) {
     return;
-    if (view.windowState == View.WINDOW_HIDDEN || view.windowState == View.WINDOW_MINIMIZED) {
-        if (is_linux) {
-            view.focus = self;
-        } else {
-            setWindowState(View.WINDOW_SHOWN);
-        }
-        if (idx >= 0) body.cur = idx;
-    } else {
-        view.windowTopmost = true;
-        view.windowTopmost = false;
-    }
 }
 
 handler.addConnection = function(id, is_file_transfer, is_view_camera, is_terminal, port_forward, peer_id, name, authorized, keyboard, clipboard, audio, file, restart, recording, block_input) {
