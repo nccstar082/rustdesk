@@ -39,6 +39,7 @@ const borderColor = Color(0xFF2F65BA);
 class _DesktopHomePageState extends State<DesktopHomePage>
     with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
   final _leftPaneScrollController = ScrollController();
+  Timer? _updateTimer; // 已修复：补上缺失的声明
 
   @override
   bool get wantKeepAlive => true;
@@ -485,22 +486,12 @@ class _DesktopHomePageState extends State<DesktopHomePage>
           bind.mainIsInstalledDaemon(prompt: true);
         });
       }
-      //// Disable microphone configuration for macOS. We will request the permission when needed.
-      // else if ((await osxCanRecordAudio() !=
-      //     PermissionAuthorizeType.authorized)) {
-      //   return buildInstallCard("Permissions", "config_microphone", "Configure",
-      //       () async {
-      //     osxRequestAudio();
-      //     watchIsCanRecordAudio = true;
-      //   });
-      // }
     } else if (isLinux) {
       if (bind.isOutgoingOnly()) {
         return Container();
       }
       final LinuxCards = <Widget>[];
       if (bind.isSelinuxEnforcing()) {
-        // Check is SELinux enforcing, but show user a tip of is SELinux enabled for simple.
         final keyShowSelinuxHelpTip = "show-selinux-help-tip";
         if (bind.mainGetLocalOption(key: keyShowSelinuxHelpTip) != 'N') {
           LinuxCards.add(buildInstallCard(
@@ -536,7 +527,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         );
       }
     }
-// 删除退出按键
     return Container();
   }
 
@@ -697,11 +687,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       if (watchIsInputMonitoring) {
         if (bind.mainIsCanInputMonitoring(prompt: false)) {
           watchIsInputMonitoring = false;
-          // Do not notify for now.
-          // Monitoring may not take effect until the process is restarted.
-          // rustDeskWinManager.call(
-          //     WindowType.RemoteDesktop, kWindowDisableGrabKeyboard, '');
-          setState(() {});
         }
       }
       if (watchIsCanRecordAudio) {
@@ -742,7 +727,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       switch (methodName) {
         case kWindowBumpMouse: return true;
       }
-
       return false;
     }
 
@@ -894,7 +878,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       print('Failed to load desk tip text: $e');
     }
   }
-  }
 
   Widget buildPluginEntry() {
     final entries = PluginUiManager.instance.entries.entries;
@@ -928,7 +911,6 @@ void setPasswordDialog({VoidCallback? notEmptyCallback}) async {
     DigitValidationRule(),
     UppercaseValidationRule(),
     LowercaseValidationRule(),
-    // SpecialCharacterValidationRule(),
     MinCharactersValidationRule(8),
   ];
   final maxLength = bind.mainMaxEncryptLen();
