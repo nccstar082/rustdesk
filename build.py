@@ -10,6 +10,7 @@ import hashlib
 import argparse
 import sys
 from pathlib import Path
+from datetime import datetime, timezone, timedelta
 
 windows = platform.platform().startswith('Windows')
 osx = platform.platform().startswith(
@@ -153,6 +154,11 @@ def make_parser():
     return parser
 
 
+def get_build_timestamp():
+    # 使用中国时区（UTC+8）
+    china_tz = timezone(timedelta(hours=8))
+    now = datetime.now(china_tz)
+    return now.strftime('%y%m%d-%H%M')
 # Generate build script for docker
 #
 # it assumes all build dependencies are installed in environments
@@ -299,7 +305,7 @@ Version: %s
 Architecture: %s
 Maintainer: rustdesk <info@rustdesk.com>
 Homepage: https://rustdesk.com
-Depends: libgtk-3-0, libxcb-randr0, libxdo3, libxfixes3, libxcb-shape0, libxcb-xfixes0, libasound2, libsystemd0, curl, libva2, libva-drm2, libva-x11-2, libgstreamer-plugins-base1.0-0, libpam0g, gstreamer1.0-pipewire%s
+Depends: libgtk-3-0, libxcb-randr0, libxdo3 | libxdo4, libxfixes3, libxcb-shape0, libxcb-xfixes0, libasound2, libsystemd0, curl, libva2, libva-drm2, libva-x11-2, libgstreamer-plugins-base1.0-0, libpam0g, gstreamer1.0-pipewire%s
 Recommends: libayatana-appindicator3-1
 Description: A remote control software.
 
@@ -320,7 +326,8 @@ def build_flutter_deb(version, features):
         system2(f'cargo build --features {features} --lib --release')
         ffi_bindgen_function_refactor()
     os.chdir('flutter')
-    system2('flutter build linux --release')
+    timestamp = get_build_timestamp()
+    system2(f'flutter build linux --release --dart-define=BUILD_TIMESTAMP={timestamp}')
     system2('mkdir -p tmpdeb/usr/bin/')
     system2('mkdir -p tmpdeb/usr/share/rustdesk')
     system2('mkdir -p tmpdeb/etc/rustdesk/')
@@ -410,7 +417,8 @@ def build_flutter_dmg(version, features):
     system2(
         "cp target/release/liblibrustdesk.dylib target/release/librustdesk.dylib")
     os.chdir('flutter')
-    system2('flutter build macos --release')
+    timestamp = get_build_timestamp()
+    system2(f'flutter build macos --release --dart-define=BUILD_TIMESTAMP={timestamp}')
     system2('cp -rf ../target/release/service ./build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS/')
     '''
     system2(
@@ -425,7 +433,8 @@ def build_flutter_arch_manjaro(version, features):
         system2(f'cargo build --features {features} --lib --release')
     ffi_bindgen_function_refactor()
     os.chdir('flutter')
-    system2('flutter build linux --release')
+    timestamp = get_build_timestamp()
+    system2(f'flutter build linux --release --dart-define=BUILD_TIMESTAMP={timestamp}')
     system2(f'strip {flutter_build_dir}/lib/librustdesk.so')
     os.chdir('../res')
     system2('HBB=`pwd`/.. FLUTTER=1 makepkg -f')
@@ -438,7 +447,8 @@ def build_flutter_windows(version, features, skip_portable_pack):
             print("cargo build failed, please check rust source code.")
             exit(-1)
     os.chdir('flutter')
-    system2('flutter build windows --release')
+    timestamp = get_build_timestamp()
+    system2(f'flutter build windows --release --dart-define=BUILD_TIMESTAMP={timestamp}')
     os.chdir('..')
     shutil.copy2('target/release/deps/dylib_virtual_display.dll',
                  flutter_build_dir_2)
@@ -512,7 +522,7 @@ def main():
         system2('pip3 install -r requirements.txt')
         system2(
             f'python3 ./generate.py -f ../../{res_dir} -o . -e ../../{res_dir}/rustdesk-{version}-win7-install.exe')
-        system2('mv ../../{res_dir}/rustdesk-{version}-win7-install.exe ../..')
+        system2(f'mv ../../{res_dir}/rustdesk-{version}-win7-install.exe ../..')
     elif os.path.isfile('/usr/bin/pacman'):
         # pacman -S -needed base-devel
         system2("sed -i 's/pkgver=.*/pkgver=%s/g' res/PKGBUILD" % version)
