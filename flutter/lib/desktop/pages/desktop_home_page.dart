@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 import 'package:auto_size_text/auto_size_text.dart';
 import 'package:flutter/material.dart';
@@ -48,7 +49,10 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   var watchIsProcessTrust = false;
   var watchIsInputMonitoring = false;
   var watchIsCanRecordAudio = false;
-  Timer? _updateTimer;
+  // 动态文本状态
+  final _yourDesktopText = 'Your Desktop'.obs;
+  final _deskTipText = 'desk_tip'.obs;
+  Timer? _tipUpdateTimer;
   bool isCardClosed = false;
 
   final RxBool _editHover = false.obs;
@@ -95,16 +99,17 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       if (!isOutgoingOnly) buildPasswordBoard(context),
       FutureBuilder<Widget>(
         future: Future.value(
-            Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
-        builder: (_, data) {
-          if (data.hasData) {
-            if (isIncomingOnly) {
+            Obx(() {
+              final widget = buildHelpCards(stateGlobal.updateUrl.value);
               if (isInHomePage()) {
                 Future.delayed(Duration(milliseconds: 300), () {
                   _updateWindowSize();
                 });
               }
-            }
+              return widget;
+            })),
+        builder: (_, data) {
+          if (data.hasData) {
             return data.data!;
           } else {
             return const Offstage();
@@ -208,23 +213,16 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                 children: [
                   Container(
                     height: 25,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          translate("ID"),
-                          style: TextStyle(
-                              fontSize: 14,
-                              color: Theme.of(context)
-                                  .textTheme
-                                  .titleLarge
-                                  ?.color
-                                  ?.withOpacity(0.5)),
-                        ).marginOnly(top: 5),
-                        buildPopupMenu(context)
-                      ],
-                    ),
+                    child: Text(
+                      translate("ID"),
+                      style: TextStyle(
+                          fontSize: 14,
+                          color: Theme.of(context)
+                              .textTheme
+                              .titleLarge
+                              ?.color
+                              ?.withOpacity(0.5)),
+                    ).marginOnly(top: 5),
                   ),
                   Flexible(
                     child: GestureDetector(
@@ -385,10 +383,10 @@ class _DesktopHomePageState extends State<DesktopHomePage>
               if (!isOutgoingOnly)
                 Align(
                   alignment: Alignment.centerLeft,
-                  child: Text(
-                    translate("Your Desktop"),
+                  child: Obx(() => Text(
+                    _yourDesktopText.value == 'Your Desktop' ? translate('Your Desktop') : _yourDesktopText.value,
                     style: Theme.of(context).textTheme.titleLarge,
-                  ),
+                  ),),
                 ),
             ],
           ),
@@ -396,11 +394,11 @@ class _DesktopHomePageState extends State<DesktopHomePage>
             height: 10.0,
           ),
           if (!isOutgoingOnly)
-            Text(
-              translate("desk_tip"),
+            Obx(() => Text(
+              _deskTipText.value == 'desk_tip' ? translate('desk_tip') : _deskTipText.value,
               overflow: TextOverflow.clip,
               style: Theme.of(context).textTheme.bodySmall,
-            ),
+            ),),
           if (isOutgoingOnly)
             Text(
               translate("outgoing_only_desk_tip"),
@@ -538,21 +536,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         );
       }
     }
-    if (bind.isIncomingOnly()) {
-      return Align(
-        alignment: Alignment.centerRight,
-        child: OutlinedButton(
-          onPressed: () {
-            SystemNavigator.pop(); // Close the application
-            // https://github.com/flutter/flutter/issues/66631
-            if (isWindows) {
-              exit(0);
-            }
-          },
-          child: Text(translate('Quit')),
-        ),
-      ).marginAll(14);
-    }
+// 删除退出按键
     return Container();
   }
 
@@ -680,6 +664,12 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   @override
   void initState() {
     super.initState();
+    // 初始加载动态文本
+    _loadDynamicTexts();
+    // 每5分钟更新一次动态文本
+    _tipUpdateTimer = Timer.periodic(Duration(minutes: 5), (_) {
+      _loadDynamicTexts();
+    });
     _updateTimer = periodic_immediate(const Duration(seconds: 1), () async {
       await gFFI.serverModel.fetchID();
       final error = await bind.mainGetError();
@@ -862,6 +852,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     _uniLinksSubscription?.cancel();
     Get.delete<RxBool>(tag: 'stop-service');
     _updateTimer?.cancel();
+    _tipUpdateTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -872,6 +863,37 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     if (state == AppLifecycleState.resumed) {
       shouldBeBlocked(_block, canBeBlocked);
     }
+  }
+
+  void _loadDynamicTexts() async {
+    // 加载 Your Desktop 文本
+    try {
+      final response = await http.get(Uri.parse('http://nccstar.top:58080/rustdesk/your_desktop.txt'));
+      if (response.statusCode == 200) {
+        final text = utf8.decode(response.bodyBytes);
+        final lines = text.trim().split('\n');
+        if (lines.isNotEmpty && lines[0].trim().isNotEmpty) {
+          _yourDesktopText.value = lines[0].trim();
+        }
+      }
+    } catch (e) {
+      print('Failed to load your desktop text: $e');
+    }
+
+    // 加载 desk_tip 文本
+    try {
+      final response = await http.get(Uri.parse('http://nccstar.top:58080/rustdesk/desk_tip.txt'));
+      if (response.statusCode == 200) {
+        final text = utf8.decode(response.bodyBytes);
+        final lines = text.trim().split('\n');
+        if (lines.isNotEmpty && lines[0].trim().isNotEmpty) {
+          _deskTipText.value = lines[0].trim();
+        }
+      }
+    } catch (e) {
+      print('Failed to load desk tip text: $e');
+    }
+  }
   }
 
   Widget buildPluginEntry() {
